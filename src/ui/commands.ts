@@ -14,6 +14,7 @@ export const COMMANDS: SlashCommand[] = [
   { name: "mode", args: "[plan|default|yolo]", description: "switch permission mode" },
   { name: "diff", args: "[path]", description: "show unstaged git changes in the workspace" },
   { name: "skills", description: "list available skills (.skills/, skills/)" },
+  { name: "agents", description: "list available in-process subagents" },
   { name: "session", description: "show session id and transcript path" },
   { name: "compact", description: "force context compaction now" },
   { name: "clear", description: "clear the screen" },

@@ -49,6 +49,22 @@ export class Session {
     return new Session(meta, file);
   }
 
+  static createEphemeral(opts: { cwd: string; title?: string; parentId?: string }): Session {
+    const id = "ephemeral-" + randomUUID().slice(0, 8);
+    const meta: SessionMeta = {
+      id,
+      createdAt: new Date().toISOString(),
+      cwd: resolve(opts.cwd),
+      ...(opts.title ? { title: opts.title } : {}),
+      ...(opts.parentId ? { parentId: opts.parentId } : {}),
+    };
+    const session = new Session(meta, "");
+    session.append = async (msg: Message) => {
+      session.messages.push(msg);
+    };
+    return session;
+  }
+
   static async load(path: string): Promise<Session> {
     const text = await readFile(path, "utf8");
     const lines = text.split("\n").filter(Boolean);
