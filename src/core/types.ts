@@ -74,6 +74,8 @@ export interface ToolContext {
   signal: AbortSignal;
   /** Ask the user / policy layer whether this call may run. */
   authorize(call: { tool: string; args: Record<string, unknown>; readOnly: boolean }): Promise<boolean>;
+  /** Report how a subprocess was isolated, for the audit log. */
+  sandboxReport?(report: { kind: string; note?: string; command?: string }): void;
 }
 
 export type AgentEvent =

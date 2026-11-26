@@ -36,6 +36,10 @@ export interface ConfigFile {
   rules?: Rule[];
   maxSteps?: number;
   systemPrompt?: string;
+  /** OS sandbox settings for the bash tool. */
+  sandbox?: import("../safety/sandbox.ts").SandboxConfig;
+  /** Audit log settings. */
+  audit?: { path?: string; disabled?: boolean; maxBytes?: number };
 }
 
 export interface Config {
@@ -45,6 +49,8 @@ export interface Config {
   maxSteps: number;
   systemPrompt: string;
   mcpServers?: Record<string, import("../mcp/types.ts").McpServerConfig>;
+  sandbox: import("../safety/sandbox.ts").SandboxConfig;
+  audit: { path?: string; disabled?: boolean; maxBytes?: number };
   /** Which config files were read, for `harness config`. */
   sources: string[];
   /** The merged config file contents (user + project). */
@@ -112,6 +118,8 @@ export async function loadConfig(
     maxSteps: numberFromEnv(env.HARNESS_MAX_STEPS) ?? file.maxSteps ?? 60,
     systemPrompt: file.systemPrompt ?? "",
     mcpServers: file.mcpServers ?? {},
+    sandbox: file.sandbox ?? (env.HARNESS_SANDBOX === "off" ? { mode: "off" } : {}),
+    audit: file.audit ?? (env.HARNESS_AUDIT === "off" ? { disabled: true } : {}),
     sources,
     file,
   };

@@ -1,4 +1,5 @@
-import { bashTool } from "./bash.ts";
+import { createBashTool } from "./bash.ts";
+import type { SandboxConfig } from "../safety/sandbox.ts";
 import { editTool } from "./edit.ts";
 import { globTool } from "./glob.ts";
 import { grepTool } from "./grep.ts";
@@ -17,7 +18,10 @@ export function createToolRegistry(opts?: {
   includeSearch?: boolean;
   includeM3Tools?: boolean;
   autoDeferThreshold?: number;
+  /** OS sandbox settings for the bash tool. */
+  sandbox?: SandboxConfig;
 }): ToolRegistry {
+  const bashTool = createBashTool(opts?.sandbox);
   const tools = [bashTool, readTool, editTool, writeTool];
   if (opts?.includeSearch !== false) tools.push(globTool, grepTool);
   if (opts?.includeM3Tools !== false) tools.push(diffTool, diagnosticsTool);
@@ -26,7 +30,7 @@ export function createToolRegistry(opts?: {
 
 export { ToolRegistry, defineTool } from "./registry.ts";
 export {
-  bashTool,
+  createBashTool,
   readTool,
   editTool,
   writeTool,

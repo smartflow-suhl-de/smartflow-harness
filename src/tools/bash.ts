@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { Sandbox, type SandboxConfig } from "../safety/sandbox.ts";
 import { defineTool, ok, requireString } from "./registry.ts";
 
 const MAX_OUTPUT = 30_000;
@@ -11,7 +12,13 @@ const DEFAULT_TIMEOUT_MS = 120_000;
  * model: dedicated tools give better error messages and cost fewer tokens
  * than `cat`, `sed`, and `find` output.
  */
-export const bashTool = defineTool({
+/**
+ * Create the bash tool. `sandbox` decides whether commands run inside a
+ * bubblewrap namespace; when it is missing or disabled they run as before.
+ */
+export function createBashTool(sandboxConfig: SandboxConfig = {}) {
+  const sandbox = new Sandbox(sandboxConfig);
+  return defineTool({
   name: "bash",
   description:
     "Run a shell command in the workspace. Returns stdout, stderr and the exit code. " +
@@ -33,14 +40,35 @@ export const bashTool = defineTool({
     const timeoutMs = Number(args.timeout_ms ?? DEFAULT_TIMEOUT_MS);
     const cwd = typeof args.cwd === "string" && args.cwd ? `${ctx.cwd}/${args.cwd}` : ctx.cwd;
 
-    return new Promise((resolve) => {
-      const child = spawn(command, {
-        cwd,
-        shell: true,
-        env: { ...process.env, GIT_PAGER: "cat", PAGER: "cat", NO_COLOR: "1" },
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: true,
-      });
+    const env = { ...process.env, GIT_PAGER: "cat", PAGER: "cat", NO_COLOR: "1" };
+
+    return new Promise(async (resolve) => {
+      const plan = sandbox.plan({ cwd, command, env: env as Record<string, string> });
+      if (plan.kind === "bwrap") {
+        // bwrap can be installed and still unable to start (no user namespaces,
+        // no CAP_SYS_ADMIN). Probe once so a broken sandbox degrades to the
+        // plain shell with an explicit note instead of failing every command.
+        const fallback = await sandbox.runWithFallback({ cwd, command, env: env as Record<string, string> });
+        if (fallback.kind === "none") {
+          plan.kind = "none";
+          plan.note = fallback.note ?? plan.note;
+        }
+      }
+
+      const child = plan.kind === "bwrap"
+        ? spawn(plan.argv[0]!, plan.argv.slice(1), {
+            cwd,
+            env,
+            stdio: ["ignore", "pipe", "pipe"],
+            detached: true,
+          })
+        : spawn(command, {
+            cwd,
+            shell: true,
+            env,
+            stdio: ["ignore", "pipe", "pipe"],
+            detached: true,
+          });
 
       let stdout = "";
       let stderr = "";
@@ -81,6 +109,11 @@ export const bashTool = defineTool({
         if (stderr.trim()) parts.push(`[stderr]\n${truncate(stderr.trim(), MAX_OUTPUT / 2, "tail")}`);
         if (timedOut) parts.push(`[timed out after ${timeoutMs}ms]`);
         else if (code !== 0) parts.push(`[exit code ${code}${signal ? `, signal ${signal}` : ""}]`);
+        if (ctx.sandboxReport) {
+          ctx.sandboxReport({ kind: plan.kind, note: plan.note, command });
+        } else if (plan.note) {
+          parts.push(`[sandbox: ${plan.note}]`);
+        }
 
         const output = parts.join("\n\n") || "(no output)";
         const failed = code !== 0 || timedOut;
@@ -100,7 +133,8 @@ export const bashTool = defineTool({
       child.on("close", finish);
     });
   },
-});
+  });
+}
 
 function truncate(text: string, max: number, keep: "head" | "tail"): string {
   if (text.length <= max) return text;

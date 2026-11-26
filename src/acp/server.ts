@@ -22,6 +22,8 @@ export interface AcpServerOptions {
   systemPrompt: string;
   maxSteps?: number;
   diagnostics?: boolean;
+  /** Security audit log, shared with the CLI. */
+  audit?: import("../safety/audit.ts").AuditLog;
 }
 
 interface ManagedSession {
@@ -190,6 +192,7 @@ export class AcpServer {
             onEvent,
             maxSteps: this.opts.maxSteps,
             diagnostics: this.opts.diagnostics,
+            audit: this.opts.audit,
           });
 
           this.sendResponse(id, {
