@@ -13,6 +13,7 @@ export const COMMANDS: SlashCommand[] = [
   { name: "model", args: "[id]", description: "show or change the model" },
   { name: "mode", args: "[plan|default|yolo]", description: "switch permission mode" },
   { name: "diff", args: "[path]", description: "show unstaged git changes in the workspace" },
+  { name: "skills", description: "list available skills (.skills/, skills/)" },
   { name: "session", description: "show session id and transcript path" },
   { name: "compact", description: "force context compaction now" },
   { name: "clear", description: "clear the screen" },
@@ -24,7 +25,11 @@ export interface ProviderNamesSource {
   (): string[];
 }
 
-export function createCompleter(opts: { providers: ProviderNamesSource; models?: () => string[] }): Completer {
+export function createCompleter(opts: {
+  providers: ProviderNamesSource;
+  models?: () => string[];
+  skills?: () => import("../skills/types.ts").Skill[];
+}): Completer {
   return {
     complete(buffer: string, cursor: number): Completion[] {
       const before = buffer.slice(0, cursor);
@@ -35,11 +40,21 @@ export function createCompleter(opts: { providers: ProviderNamesSource; models?:
 
       if (parts.length === 1) {
         const typed = parts[0] ?? "/";
-        return COMMANDS.filter((c) => `/${c.name}`.startsWith(typed)).map((c) => ({
+        const builtins = COMMANDS.filter((c) => `/${c.name}`.startsWith(typed)).map((c) => ({
           value: `/${c.name} `,
           label: `/${c.name}`,
           hint: c.args ? `${c.args} · ${c.description}` : c.description,
         }));
+
+        const skillMatches = (opts.skills?.() ?? [])
+          .filter((s) => `/${s.name}`.startsWith(typed))
+          .map((s) => ({
+            value: `/${s.name} `,
+            label: `/${s.name}`,
+            hint: s.args ? `${s.args} · ${s.description}` : s.description,
+          }));
+
+        return [...builtins, ...skillMatches];
       }
 
       const command = (parts[0] ?? "").slice(1);
