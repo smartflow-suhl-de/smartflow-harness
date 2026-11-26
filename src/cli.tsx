@@ -35,8 +35,11 @@ import type { Ui } from "./ui/ui.ts";
 import type { Status } from "./ui/store.ts";
 import { resolve } from "node:path";
 import { runInit } from "./init.ts";
+import { installPipeGuards } from "./util/pipe.ts";
 
 const VERSION = "0.1.0";
+
+installPipeGuards([process.stdout, process.stderr]);
 const color = useColor();
 const c = {
   dim: (s: string) => color("\u001b[2m", s, "\u001b[22m"),
