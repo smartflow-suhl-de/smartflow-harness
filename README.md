@@ -3,7 +3,7 @@
 Ein eigener Coding-Agent-Harness. Klein, lesbar, ohne Framework.
 
 ```bash
-export HARNESS_API_KEY=sk-...
+export HARNESS_API_KEY="$(cat ~/.config/harness/key)"
 export HARNESS_MODEL=gpt-4.1-mini      # oder claude-sonnet-4-6 via Gateway
 node src/cli.ts "fix the failing test in tests/"
 ```
