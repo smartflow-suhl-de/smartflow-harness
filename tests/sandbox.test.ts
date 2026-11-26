@@ -127,16 +127,21 @@ test("Sandbox: writable paths overlapping system dirs are ignored", () => {
   assert.equal(binds, 0, "a path inside a read-only system dir must never be bound writable");
 });
 
-test("Sandbox: when bwrap cannot start, the user-namespace sandbox takes over", async () => {
+test("Sandbox: when bwrap cannot start, the user-namespace sandbox takes over", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "harness-unshare-fallback-"));
   const fake = join(dir, "bwrap");
   await writeFile(fake, "#!/bin/sh\necho 'bwrap: Failed to make / slave: Operation not permitted' >&2\nexit 1\n", { mode: 0o755 });
   const sandbox = new Sandbox({ mode: "auto", bwrapPath: fake });
-  if (process.platform !== "linux" || !sandbox.unshare) return;
+  if (process.platform !== "linux" || !sandbox.unshare) {
+    // A runner without unshare(1) cannot exercise this backend; skip rather than
+    // assert a behaviour the host cannot provide.
+    t.skip("unshare(1) not available on this host");
+    return;
+  }
 
   const notes: string[] = [];
   const plan = await sandbox.resolve({ cwd: dir, command: "echo hi", env: {} }, (r) => notes.push(r));
-  assert.equal(plan.kind, "unshare");
+  assert.equal(plan.kind, "unshare", `expected the unshare backend, got ${plan.kind}: ${plan.note ?? ""}`);
   assert.deepEqual(plan.argv.slice(0, 3), [sandbox.unshare, "-U", "-r"]);
   assert.ok(plan.argv.includes("-n"), "network is isolated by default");
   assert.ok(plan.argv.includes("-p"), "pid namespace");
@@ -156,11 +161,22 @@ test("Sandbox: unshareFallback=false degrades to a plain shell", async () => {
   assert.match(plan.note ?? "", /running unsandboxed/);
 });
 
-test("Sandbox live: the user-namespace sandbox really isolates network and env", async () => {
-  const sandbox = new Sandbox({ mode: "auto", bwrapPath: "" });
-  if (process.platform !== "linux" || !sandbox.unshare) return;
+test("Sandbox live: the user-namespace sandbox really isolates network and env", async (t) => {
+  // Force the unshare path by pretending bwrap is broken, so the live check
+  // exercises the same argv the tool would use on a host without mount rights.
+  const fakeDir = await mkdtemp(join(tmpdir(), "harness-live-bwrap-"));
+  const fakeBwrap = join(fakeDir, "bwrap");
+  await writeFile(fakeBwrap, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  const sandbox = new Sandbox({ mode: "auto", bwrapPath: fakeBwrap });
+  if (process.platform !== "linux" || !sandbox.unshare) {
+    t.skip("unshare(1) not available on this host");
+    return;
+  }
   const plan = await sandbox.resolve({ cwd: tmpdir(), command: "echo hi", env: {} }, () => {});
-  if (plan.kind !== "unshare") return;
+  if (plan.kind !== "unshare") {
+    t.skip(`user namespaces not permitted here: ${plan.note ?? ""}`);
+    return;
+  }
 
   const { spawnSync } = await import("node:child_process");
   const script = "n=$(awk \"NR>2 && \\$1 !~ /lo:/\" /proc/net/dev | wc -l); echo net=$n; echo pid=$$; echo secret=${OPENAI_API_KEY:-none}";
