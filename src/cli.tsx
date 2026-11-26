@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { loadConfig, readConfigFiles } from "./config/config.ts";
+import { loadConfig, readConfigFiles, saveProviderModel } from "./config/config.ts";
 import { loadCredentials } from "./config/credentials.ts";
 import { connect } from "./ui/connect.ts";
 import {
@@ -14,10 +14,12 @@ import { buildSystemPrompt } from "./core/prompt.ts";
 import { Session } from "./core/session.ts";
 import type { AgentEvent } from "./core/types.ts";
 import { OpenAiCompatibleProvider } from "./provider/openai.ts";
+import { explainProviderError } from "./provider/errors.ts";
+import { fetchModels } from "./provider/probe.ts";
 import { PermissionEngine } from "./safety/permissions.ts";
 import { createToolRegistry } from "./tools/index.ts";
 import { stdin, stdout } from "node:process";
-import { createCompleter, COMMANDS, KEY_HELP } from "./ui/commands.ts";
+import { createCompleter, createListCompleter, COMMANDS, KEY_HELP } from "./ui/commands.ts";
 import { createInkUi } from "./ui/ink-ui.tsx";
 import { createPlainUi } from "./ui/plain-ui.ts";
 import { loadHistory, pushHistory, saveHistory } from "./ui/history.ts";
@@ -86,8 +88,32 @@ async function main(): Promise<void> {
   const modelSuggestions: string[] = [];
   let active = config.provider;
   let provider: OpenAiCompatibleProvider | undefined;
-  const getProvider = () => (provider ??= buildProvider(active));
+  const note = (message: string) => ui.addItem("notice", message);
+  const getProvider = () => (provider ??= buildProvider(active, note));
   const isConnected = () => Boolean(active.apiKey) || isLocalUrl(active.baseUrl);
+
+  /** Ask the endpoint which models it has; fills the /model completion list. */
+  const refreshModels = async (): Promise<string[]> => {
+    if (!isConnected()) return [];
+    const result = await fetchModels({
+      baseUrl: active.baseUrl,
+      apiKey: active.apiKey,
+      headers: active.headers,
+    });
+    if (result.ok && result.models.length > 0) {
+      modelSuggestions.splice(0, modelSuggestions.length, ...result.models);
+      return result.models;
+    }
+    return [];
+  };
+
+  const setModel = async (id: string): Promise<void> => {
+    active = { ...active, model: id };
+    provider = buildProvider(active, note);
+    ui.updateStatus({ model: id });
+    const path = await saveProviderModel(active.name, id, cwd);
+    ui.addItem("notice", `model: ${id} · saved in ${path}`);
+  };
 
   const tools = createToolRegistry();
   const permissions = new PermissionEngine({ mode: config.mode, rules: config.rules, cwd });
@@ -99,6 +125,7 @@ async function main(): Promise<void> {
     providers: () => listProviders(config.file).map((p) => p.name),
     models: () => modelSuggestions,
   });
+  const modelCompleter = createListCompleter(() => modelSuggestions, "model");
 
   const interactive = Boolean(stdin.isTTY && stdout.isTTY);
   const ink = interactive ? createInkUi(statusOf(active, permissions.mode, isConnected())) : undefined;
@@ -161,9 +188,19 @@ async function main(): Promise<void> {
         outputTokens += event.usage.outputTokens;
         ui.updateStatus({ inputTokens, outputTokens });
         break;
-      case "error":
-        ui.addItem("error", event.message);
+      case "error": {
+        const friendly = explainProviderError(event.cause ?? event.message);
+        ui.addItem("error", friendly.message);
+        if (friendly.hint) ui.addItem("notice", friendly.hint);
+        if (friendly.suggestModels) {
+          void refreshModels().then((models) => {
+            if (models.length > 0) {
+              ui.addItem("notice", `available: ${models.slice(0, 8).join(", ")}${models.length > 8 ? ", …" : ""}`);
+            }
+          });
+        }
         break;
+      }
       case "done":
         if (event.reason === "max_steps") ui.addItem("notice", "step limit reached");
         if (event.reason === "stuck") ui.addItem("notice", "stopped: repeated tool calls");
@@ -295,6 +332,7 @@ async function main(): Promise<void> {
             });
             active = config.provider;
             provider = undefined;
+            void note;
             permissions.mode = config.mode;
             ui.updateStatus({
               provider: active.name,
@@ -310,17 +348,32 @@ async function main(): Promise<void> {
       } else if (command === "session") {
         ui.addItem("notice", `${session.meta.id}  ${session.path}`);
       } else if (command === "model") {
-        if (!rest[0]) {
-          ui.addItem("notice", `${active.name} · ${active.model}`);
-          if (modelSuggestions.length > 0) {
-            ui.addItem("notice", `known: ${modelSuggestions.slice(0, 12).join(", ")}`);
-          }
-        } else {
-          active = { ...active, model: rest[0] };
-          provider = buildProvider(active);
-          ui.updateStatus({ model: active.model });
-          ui.addItem("notice", `model: ${active.model}`);
+        if (rest[0]) {
+          await setModel(rest[0]);
+          continue;
         }
+
+        ui.addItem("notice", `${active.name} · ${active.model}`);
+        ui.setBusy(true);
+        const models = await refreshModels();
+        ui.setBusy(false);
+
+        if (models.length === 0) {
+          ui.addItem("notice", "this endpoint does not list models; use /model <id>");
+          continue;
+        }
+        const answer = await ui.ask("model: ", {
+          tone: "question",
+          completer: modelCompleter,
+          placeholder: `${models.length} available · tab to pick`,
+        });
+        if (answer.type === "cancel") continue;
+        const chosen = answer.value.trim();
+        if (!chosen) continue;
+        if (!models.includes(chosen)) {
+          ui.addItem("notice", `"${chosen}" was not in the list — using it anyway`);
+        }
+        await setModel(chosen);
       } else if (command === "clear") {
         ui.clear();
         banner();
@@ -397,7 +450,10 @@ function printCommands(ui: Ui): void {
   }
 }
 
-function buildProvider(resolved: ResolvedProvider): OpenAiCompatibleProvider {
+function buildProvider(
+  resolved: ResolvedProvider,
+  onNotice?: (message: string) => void,
+): OpenAiCompatibleProvider {
   const credential = resolved.apiKey;
   return new OpenAiCompatibleProvider({
     name: resolved.name,
@@ -406,6 +462,7 @@ function buildProvider(resolved: ResolvedProvider): OpenAiCompatibleProvider {
     apiKey: credential,
     contextWindow: resolved.contextWindow,
     headers: resolved.headers,
+    ...(onNotice ? { onNotice } : {}),
   });
 }
 

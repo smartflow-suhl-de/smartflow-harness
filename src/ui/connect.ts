@@ -93,10 +93,14 @@ export async function connect(opts: {
     }
   }
 
+  // Keep a configured model only if the endpoint actually has it; presets are
+  // guesses and local servers rarely match them.
+  const configured = existing.model ?? preset?.model;
+  const listed = probe.models ?? [];
   const model =
-    existing.model ??
-    preset?.model ??
-    (await chooseModel(io, probe.models ?? [], chosen.name));
+    configured && (listed.length === 0 || listed.includes(configured))
+      ? configured
+      : await chooseModel(io, listed, chosen.name);
   if (!model) {
     io.write("aborted: no model\n");
     return false;

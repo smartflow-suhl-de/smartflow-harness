@@ -21,6 +21,43 @@ export interface ProbeResult {
   models?: string[];
 }
 
+export interface ModelListResult {
+  ok: boolean;
+  models: string[];
+  message: string;
+}
+
+/** List models from GET /models, for `/model` and error hints. */
+export async function fetchModels(
+  target: Pick<ProbeTarget, "baseUrl" | "apiKey" | "headers">,
+  timeoutMs = 15_000,
+): Promise<ModelListResult> {
+  const base = target.baseUrl.replace(/\/+$/, "");
+  const res = await request(
+    `${base}/models`,
+    {
+      method: "GET",
+      headers: {
+        ...(target.apiKey ? { authorization: `Bearer ${target.apiKey}` } : {}),
+        ...target.headers,
+      },
+    },
+    timeoutMs,
+  );
+
+  if (res.status === 200) {
+    const models = extractModels(res.body);
+    return { ok: true, models, message: `${models.length} models` };
+  }
+  if (res.status === 401 || res.status === 403) {
+    return { ok: false, models: [], message: `key rejected (HTTP ${res.status})` };
+  }
+  if (res.status === 404) {
+    return { ok: false, models: [], message: "this endpoint does not list models" };
+  }
+  return { ok: false, models: [], message: `HTTP ${res.status}` };
+}
+
 export async function probeProvider(target: ProbeTarget, timeoutMs = 15_000): Promise<ProbeResult> {
   const headers: Record<string, string> = {
     ...(target.apiKey ? { authorization: `Bearer ${target.apiKey}` } : {}),

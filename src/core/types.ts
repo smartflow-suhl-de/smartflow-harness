@@ -83,7 +83,7 @@ export type AgentEvent =
   | { type: "tool_end"; name: string; id: string; ok: boolean; summary?: string }
   | { type: "usage"; usage: Usage }
   | { type: "compacted"; removedMessages: number; summaryTokens: number }
-  | { type: "error"; message: string }
+  | { type: "error"; message: string; cause?: unknown }
   | { type: "done"; reason: "stop" | "max_steps" | "stuck" | "aborted" | "error" };
 
 export type EventSink = (event: AgentEvent) => void;

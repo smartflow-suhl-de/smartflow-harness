@@ -70,6 +70,23 @@ const MODE_HINTS: Record<string, string> = {
   yolo: "no prompts, hardline floor stays",
 };
 
+/**
+ * Completer for a plain list of values (model ids, provider names).
+ * Unlike `createCompleter` it does not require a leading slash.
+ */
+export function createListCompleter(getItems: () => string[], hint?: string): Completer {
+  return {
+    complete(buffer: string, cursor: number): Completion[] {
+      const before = buffer.slice(0, cursor);
+      const start = before.lastIndexOf(" ") + 1;
+      const typed = before.slice(start);
+      return getItems()
+        .filter((item) => item.startsWith(typed))
+        .map((item) => ({ value: item, label: item, ...(hint ? { hint } : {}) }));
+    },
+  };
+}
+
 /** One-line help for the key bindings, used by /help. */
 export const KEY_HELP: Array<[string, string]> = [
   ["tab / shift+tab", "complete, cycle the menu"],

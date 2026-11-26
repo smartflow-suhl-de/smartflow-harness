@@ -1,5 +1,6 @@
 import type { Message, ProviderTurn, ToolCall, Usage } from "../core/types.ts";
 import type { CompleteRequest, Provider } from "./provider.ts";
+import { ProviderError } from "./errors.ts";
 
 export interface OpenAiCompatibleOptions {
   model: string;
@@ -13,6 +14,8 @@ export interface OpenAiCompatibleOptions {
   maxOutputTokens?: number;
   requestTimeoutMs?: number;
   maxRetries?: number;
+  /** Called once when the model turns out to reject tool definitions. */
+  onNotice?: (message: string) => void;
 }
 
 type WireMessage =
@@ -57,6 +60,9 @@ export class OpenAiCompatibleProvider implements Provider {
   private readonly maxOutputTokens: number;
   private readonly requestTimeoutMs: number;
   private readonly maxRetries: number;
+  private readonly onNotice: ((message: string) => void) | undefined;
+  /** Set after a provider rejects tool definitions; avoids retrying every turn. */
+  private toolsDisabled = false;
 
   constructor(opts: OpenAiCompatibleOptions) {
     this.name = opts.name ?? "openai-compatible";
@@ -69,19 +75,21 @@ export class OpenAiCompatibleProvider implements Provider {
     this.maxOutputTokens = opts.maxOutputTokens ?? 8192;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 180_000;
     this.maxRetries = opts.maxRetries ?? 2;
+    this.onNotice = opts.onNotice;
   }
 
   async complete(req: CompleteRequest): Promise<ProviderTurn> {
+    const toolsAllowed = req.tools.length > 0 && !this.toolsDisabled;
     const body = {
       model: this.model,
       messages: toWire(req.messages),
-      tools: req.tools.length
+      tools: toolsAllowed
         ? req.tools.map((t) => ({
             type: "function" as const,
             function: { name: t.name, description: t.description, parameters: t.parameters },
           }))
         : undefined,
-      tool_choice: req.tools.length ? ("auto" as const) : undefined,
+      tool_choice: toolsAllowed ? ("auto" as const) : undefined,
       max_tokens: this.maxOutputTokens,
       ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
     };
@@ -93,6 +101,21 @@ export class OpenAiCompatibleProvider implements Provider {
         return parseResponse(data);
       } catch (err) {
         lastError = err;
+        if (toolsAllowed && rejectsTools(err)) {
+          // Many small local models have no tool support. A chat-only retry is
+          // still useful, as long as the user knows actions are off.
+          this.toolsDisabled = true;
+          this.onNotice?.(
+            `model "${this.model}" does not support tool calls — continuing without tools ` +
+              `(no file edits or shell commands). Use /model to pick a tool-capable model.`,
+          );
+          try {
+            return await this.complete(req);
+          } catch (retryError) {
+            lastError = retryError;
+            break;
+          }
+        }
         if (!isRetryable(err) || attempt === this.maxRetries) break;
         await sleep(500 * 2 ** attempt, req.signal);
       }
@@ -117,11 +140,12 @@ export class OpenAiCompatibleProvider implements Provider {
 
     const text = await res.text();
     if (!res.ok) {
-      const err = new Error(
-        `${this.name} HTTP ${res.status}: ${truncate(text, 600) || res.statusText}`,
-      );
-      (err as Error & { status?: number }).status = res.status;
-      throw err;
+      throw new ProviderError({
+        status: res.status,
+        body: text || res.statusText,
+        provider: this.name,
+        model: this.model,
+      });
     }
     try {
       return JSON.parse(text) as ChatCompletionResponse;
@@ -191,8 +215,14 @@ function parseResponse(data: ChatCompletionResponse): ProviderTurn {
   };
 }
 
+/** Detect "this model does not support tools" style rejections. */
+function rejectsTools(err: unknown): boolean {
+  if (!(err instanceof ProviderError) || err.status !== 400) return false;
+  return /does not support tools|tools? (are )?not supported|tool support/i.test(err.body);
+}
+
 function isRetryable(err: unknown): boolean {
-  const status = (err as { status?: number }).status;
+  const status = err instanceof ProviderError ? err.status : undefined;
   if (status && (status === 408 || status === 409 || status === 429 || status >= 500)) return true;
   const msg = err instanceof Error ? err.message : "";
   return /fetch failed|ECONNRESET|ETIMEDOUT|socket hang up/i.test(msg);

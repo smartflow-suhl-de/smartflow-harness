@@ -115,7 +115,8 @@ node src/cli.ts --provider my-gateway "refactor src/tools"
 HARNESS_PROVIDER=local node src/cli.ts      # oder per Env
 ```
 
-Im REPL: `/provider` zeigt alle, `/provider local` wechselt live.
+Im REPL: `/connect ollama` richtet ein Profil ein und prüft dabei, ob das
+Preset-Modell wirklich existiert.
 
 Eingebaute Presets (nur Defaults, überschreibbar): `openai`, `openrouter`,
 `groq`, `mistral`, `ollama`, `lmstudio`.
@@ -182,7 +183,34 @@ Events in einen externen Store — React rendert nur.
 | `ctrl+d` | auf leerer Zeile: beenden |
 
 Vervollständigt werden Slash-Befehle, deren Argumente (`/mode`, `/connect`,
-`/model`) und Provider-Namen. Das Menü öffnet mit `tab`, `↑`/`↓` bewegen die
+`/model`) und Provider-Namen.
+
+`/model` ohne Argument holt die Modellliste vom Endpoint (`GET /models`) und
+öffnet eine Auswahl. Die Wahl wird dort gespeichert, wo das Modell herkommt:
+im Projekt-`harness.json`, wenn es das Profil definiert, sonst in der
+User-Config. Ein falsches Modell ist damit ein Zwei-Tasten-Fix.
+
+Fehler kommen übersetzt an, nicht als roher JSON-Body:
+
+```
+error: ollama: model "qwen3-coder" is not available — model 'qwen3-coder' not found
+  run /model to pick one from this endpoint
+  available: llama3.2, qwen2.5-coder, mistral
+```
+
+### Modelle ohne Tool-Support
+
+Kleine lokale Modelle (z. B. `gemma3:4b`) unterstützen teils keine Tool-Calls.
+Der Harness merkt das am ersten 400er, wiederholt die Anfrage ohne Tools und
+sagt einmal:
+
+```
+note: model "gemma3:4b" does not support tool calls — continuing without tools
+      (no file edits or shell commands). Use /model to pick a tool-capable model.
+```
+
+Der Agent antwortet dann wie ein Chat-Assistent, ohne Dateien oder Shell — und
+ohne jede Runde erneut zu scheitern. Das Menü öffnet mit `tab`, `↑`/`↓` bewegen die
 Auswahl, `⏎` übernimmt. Die History liegt in
 `~/.config/harness/history` (bzw. `$HARNESS_HOME/history`) und überlebt
 Neustarts. Eingaben für Keys werden als `•` gerendert und nie gespeichert.

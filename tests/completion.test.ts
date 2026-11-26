@@ -87,3 +87,13 @@ test("open with no matches does nothing", () => {
   assert.equal(menu.isOpen, false);
   assert.equal(buffer.value, "/zzz");
 });
+test("list completer works without a leading slash", async () => {
+  const { createListCompleter } = await import("../src/ui/commands.ts");
+  const completer = createListCompleter(() => ["llama3.2", "qwen2.5-coder"]);
+  assert.deepEqual(
+    completer.complete("q", 1).map((item) => item.value),
+    ["qwen2.5-coder"],
+  );
+  assert.equal(completer.complete("", 0).length, 2);
+  assert.deepEqual(completer.complete("zzz", 3), []);
+});

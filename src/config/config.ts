@@ -1,6 +1,6 @@
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Mode, Rule } from "../safety/permissions.ts";
 import { resolveProvider, type ResolvedProvider } from "./providers.ts";
 
@@ -119,7 +119,30 @@ export async function saveUserConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<string> {
   const dir = env.HARNESS_HOME ?? join(homedir(), ".config", "harness");
-  const path = join(dir, "harness.json");
+  return mergeIntoConfig(join(dir, "harness.json"), patch);
+}
+
+/**
+ * Persist a model choice where it actually takes effect.
+ *
+ * If the project file defines this profile, writing to the user file would be
+ * silently overridden on the next start, so the project file wins here too.
+ */
+export async function saveProviderModel(
+  name: string,
+  model: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string> {
+  const projectPath = join(cwd, "harness.json");
+  const project = await readJson(projectPath);
+  if (project?.providers?.[name]) {
+    return mergeIntoConfig(projectPath, { providers: { [name]: { model } } });
+  }
+  return saveUserConfig({ providers: { [name]: { model } } }, env);
+}
+
+async function mergeIntoConfig(path: string, patch: ConfigFile): Promise<string> {
   const existing = (await readJson(path)) ?? {};
 
   const providers: Record<string, ProviderEntry> = { ...(existing.providers ?? {}) };
@@ -130,7 +153,7 @@ export async function saveUserConfig(
   const next: ConfigFile = { ...existing, ...stripKeys(patch, ["providers"]) };
   if (Object.keys(providers).length > 0) next.providers = providers;
 
-  await mkdir(dir, { recursive: true });
+  await mkdir(dirname(path), { recursive: true });
   await writeFile(path, JSON.stringify(next, null, 2) + "\n", "utf8");
   return path;
 }

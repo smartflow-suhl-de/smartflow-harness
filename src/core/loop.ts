@@ -67,7 +67,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
         }
       } catch (err) {
         // Compaction is best-effort: a failed summary must not kill the run.
-        emit({ type: "error", message: `compaction failed: ${(err as Error).message}` });
+        emit({ type: "error", message: `compaction failed: ${(err as Error).message}`, cause: err });
       }
     }
 
@@ -82,7 +82,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
       });
     } catch (err) {
       if (opts.signal.aborted) return { reason: "aborted", usage };
-      emit({ type: "error", message: (err as Error).message });
+      emit({ type: "error", message: (err as Error).message, cause: err });
       return { reason: "error", usage };
     }
 

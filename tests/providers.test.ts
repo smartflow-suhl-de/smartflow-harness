@@ -159,3 +159,50 @@ test("loadConfig merges user and project files, project wins", async () => {
     await rm(projectDir, { recursive: true, force: true });
   }
 });
+
+test("saveProviderModel writes to the project file when it defines the profile", async () => {
+  const { mkdtemp, readFile, rm, writeFile, mkdir } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join: j } = await import("node:path");
+  const { saveProviderModel } = await import("../src/config/config.ts");
+
+  const dir = await mkdtemp(j(tmpdir(), "h-save-"));
+  try {
+    const home = j(dir, "home");
+    await mkdir(home, { recursive: true });
+    await writeFile(
+      j(dir, "harness.json"),
+      JSON.stringify({ providers: { ollama: { baseUrl: "http://x/v1", model: "old" } } }),
+    );
+
+    const path = await saveProviderModel("ollama", "new", dir, { HARNESS_HOME: home } as NodeJS.ProcessEnv);
+    assert.equal(path, j(dir, "harness.json"));
+    const saved = JSON.parse(await readFile(path, "utf8")) as {
+      providers: Record<string, { model: string; baseUrl?: string }>;
+    };
+    assert.equal(saved.providers.ollama?.model, "new");
+    assert.equal(saved.providers.ollama?.baseUrl, "http://x/v1", "other fields are preserved");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("saveProviderModel falls back to the user file", async () => {
+  const { mkdtemp, readFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join: j } = await import("node:path");
+  const { saveProviderModel } = await import("../src/config/config.ts");
+
+  const dir = await mkdtemp(j(tmpdir(), "h-save2-"));
+  try {
+    const home = j(dir, "home");
+    const path = await saveProviderModel("openrouter", "new-model", dir, {
+      HARNESS_HOME: home,
+    } as NodeJS.ProcessEnv);
+    assert.equal(path, j(home, "harness.json"));
+    const saved = JSON.parse(await readFile(path, "utf8")) as { providers: Record<string, { model: string }> };
+    assert.equal(saved.providers.openrouter?.model, "new-model");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

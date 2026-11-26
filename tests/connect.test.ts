@@ -212,3 +212,25 @@ test("ctrl+c at the key prompt cancels without throwing", async () => {
     await box.cleanup();
   }
 });
+
+test("connect drops a preset model the endpoint does not have", async () => {
+  const api = await fakeApi({ models: ["llama3.2", "mistral"] });
+  const box = await sandbox();
+  try {
+    const config = await loadConfig(box.dir, { env: box.env });
+    // "ollama" has the preset model qwen3-coder, which this endpoint lacks.
+    const io = fakeIO(["", "1"]); // accept the default model, then pick #1
+
+    const ok = await connect({ config, cwd: box.dir, io, args: [api.url, "ollama"], env: box.env });
+    assert.equal(ok, true);
+
+    const saved = JSON.parse(await readFile(join(box.home, "harness.json"), "utf8")) as {
+      providers: Record<string, { model: string }>;
+    };
+    assert.notEqual(saved.providers.ollama?.model, "qwen3-coder");
+    assert.equal(saved.providers.ollama?.model, "llama3.2");
+  } finally {
+    await api.close();
+    await box.cleanup();
+  }
+});
