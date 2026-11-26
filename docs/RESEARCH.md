@@ -99,7 +99,10 @@ Aus der Studie, gruppiert nach Subsystem. Das ist die eigentliche Checkliste.
 1. **Linearer `while`-Loop zuerst.** Middleware-Pipeline erst, wenn ≥3 orthogonale
    Turn-Policies existieren (Step-Limit, Kosten-Cap, Auto-Compaction,
    Kontext-Warnung, Read-only).
-2. **Provider-Kopplung bewusst wählen.** Eigene Foundation → eng an Home-Provider,
+2. **Provider-Kopplung bewusst wählen.** Umsetzung: benannte Profile in
+   `harness.json` mit `baseUrl`/`model`/`apiKeyEnv`/`headers`, Feld-für-Feld
+   über Presets gelegt; Auswahl per `--provider`, `HARNESS_PROVIDER` oder
+   `/provider` im REPL. Kein Code-Änderung für einen neuen Endpoint. Eigene Foundation → eng an Home-Provider,
    generischer Fallback-Adapter. Multi-Provider → per-Modell-Metadaten
    (Cache-Breakpoints, Thinking-Tiers, Reasoning-Effort) zentral pflegen.
 
@@ -175,6 +178,7 @@ oder echte OS-Sandbox nötig wird, ist der Loop klein genug zum Portieren.
 |---|---|---|
 | Loop | linear, eine Funktion | Empfehlung 1; Middleware später |
 | Provider | **eine** OpenAI-kompatible Schicht | deckt OpenAI, OpenRouter, Groq, Mistral, Ollama, vLLM, LM Studio ab |
+| Provider-Auswahl | **Profile als Daten** (`providers` in `harness.json`) | neuer Endpoint = neuer JSON-Block; Secrets per `apiKeyEnv`, nie in der Datei |
 | Tools | bash, read, write, edit, glob, grep | Empfehlung 3, in der beobachteten Reihenfolge |
 | Edit | exakt → whitespace-tolerant Cascade | Empfehlung 5; nie zeilenbasiert |
 | Kontext | `AGENTS.md`/`CLAUDE.md`/`CONTEXT.md` hierarchisch | Empfehlung 6 |

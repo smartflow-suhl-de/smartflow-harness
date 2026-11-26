@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { loadConfig } from "./config/config.ts";
+import { loadConfig, readConfigFiles } from "./config/config.ts";
+import { ConfigError, isLocalUrl, listProviders, resolveProvider, type ResolvedProvider } from "./config/providers.ts";
 import { loadContextFiles } from "./context/files.ts";
 import { runAgent } from "./core/loop.ts";
 import { buildSystemPrompt } from "./core/prompt.ts";
@@ -27,9 +28,12 @@ interface Args {
   prompt?: string;
   mode?: "plan" | "default" | "yolo";
   model?: string;
+  provider?: string;
   resume?: string;
   cwd: string;
   help: boolean;
+  listProviders: boolean;
+  showConfig: boolean;
 }
 
 async function main(): Promise<void> {
@@ -37,27 +41,46 @@ async function main(): Promise<void> {
   if (args.help) return printHelp();
 
   const cwd = resolve(args.cwd);
-  const config = await loadConfig(cwd);
-  if (args.mode) config.mode = args.mode;
-  if (args.model) config.model = args.model;
 
-  if (!config.apiKey && !/localhost|127\.0\.0\.1|0\.0\.0\.0/.test(config.baseUrl)) {
+  if (args.listProviders) {
+    const { file, sources } = await readConfigFiles(cwd);
+    printProviders(cwd, file, sources);
+    return;
+  }
+
+  let config;
+  try {
+    config = await loadConfig(cwd, { ...(args.provider ? { provider: args.provider } : {}) });
+  } catch (err) {
+    if (err instanceof ConfigError) {
+      console.error(`${c.red("config:")} ${err.message}`);
+      process.exitCode = 1;
+      return;
+    }
+    throw err;
+  }
+  if (args.mode) config.mode = args.mode;
+  if (args.model) config.provider.model = args.model;
+
+  let active = config.provider;
+  let provider = buildProvider(active);
+
+  if (args.showConfig) {
+    printConfig(config, cwd);
+    return;
+  }
+
+  if (!active.apiKey && !isLocalUrl(active.baseUrl)) {
     console.error(
       c.red("No API key.") +
-        " Set HARNESS_API_KEY (or OPENAI_API_KEY), or point HARNESS_BASE_URL at a local server.\n" +
-        c.dim("Example: export HARNESS_API_KEY=... HARNESS_MODEL=gpt-4.1-mini\n"),
+        ` For provider "${active.name}" set ${c.bold(active.keyHint)}` +
+        ` (or HARNESS_API_KEY), or point the base URL at a local server.\n` +
+        c.dim(`  harness --list-providers     see configured providers\n`) +
+        c.dim(`  HARNESS_PROVIDER=${active.name} HARNESS_MODEL=${active.model} harness "task"`),
     );
     process.exitCode = 1;
     return;
   }
-
-  const provider = new OpenAiCompatibleProvider({
-    model: config.model,
-    baseUrl: config.baseUrl,
-    apiKey: config.apiKey,
-    contextWindow: config.contextWindow,
-    headers: config.providerHeaders,
-  });
 
   const tools = createToolRegistry();
   const permissions = new PermissionEngine({ mode: config.mode, rules: config.rules, cwd });
@@ -161,7 +184,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  printBanner(config.model, permissions.mode, session);
+  printBanner(active, permissions.mode, session);
   for (;;) {
     let line: string;
     try {
@@ -182,6 +205,28 @@ async function main(): Promise<void> {
           permissions.mode = mode;
           stdout.write(c.dim(`mode: ${mode}\n`));
         } else stdout.write(c.yellow("usage: /mode plan|default|yolo\n"));
+      } else if (command === "provider") {
+        if (!rest[0]) {
+          stdout.write(c.dim(`active: ${active.name} (${active.model})\n`));
+          stdout.write(
+            listProviders(config.file)
+              .map((p) => `  ${p.name === active.name ? c.green("●") : c.dim("○")} ${p.name}`)
+              .join("\n") + "\n",
+          );
+          continue;
+        }
+        try {
+          const next = resolveProvider({ file: config.file, providerName: rest[0] });
+          active = next;
+          provider = buildProvider(next);
+          config.provider = next;
+          stdout.write(c.dim(`provider: ${next.name} · ${next.model} · ${next.baseUrl}\n`));
+          if (!next.apiKey && !isLocalUrl(next.baseUrl)) {
+            stdout.write(c.yellow(`  no key: set ${next.keyHint}\n`));
+          }
+        } catch (err) {
+          stdout.write(c.yellow(`${(err as Error).message}\n`));
+        }
       } else if (command === "session") {
         stdout.write(c.dim(`${session.meta.id}  ${session.path}\n`));
       } else if (command === "compact") {
@@ -199,9 +244,9 @@ async function main(): Promise<void> {
   stdout.write(c.dim(`session: ${session.path}\n`));
 }
 
-function printBanner(model: string, mode: string, session: Session): void {
+function printBanner(active: ResolvedProvider, mode: string, session: Session): void {
   stdout.write(
-    `${c.bold("harness")} ${c.dim(VERSION)}  ${c.dim("model")} ${model}  ${c.dim("mode")} ${mode}\n` +
+    `${c.bold("harness")} ${c.dim(VERSION)}  ${c.dim("provider")} ${active.name}  ${c.dim("model")} ${active.model}  ${c.dim("mode")} ${mode}\n` +
       `${c.dim(`session ${session.meta.id} · /help for commands · ctrl+c to interrupt`)}\n\n`,
   );
 }
@@ -211,10 +256,73 @@ function printCommands(): void {
     [
       "/help              show this help",
       "/mode plan|default|yolo",
+      "/provider [name]   show or switch provider",
       "/session           show session id and transcript path",
       "/exit              quit",
       "",
     ].join("\n"),
+  );
+}
+
+function buildProvider(resolved: ResolvedProvider): OpenAiCompatibleProvider {
+  const credential = resolved.apiKey;
+  return new OpenAiCompatibleProvider({
+    name: resolved.name,
+    model: resolved.model,
+    baseUrl: resolved.baseUrl,
+    apiKey: credential,
+    contextWindow: resolved.contextWindow,
+    headers: resolved.headers,
+  });
+}
+
+function printProviders(
+  cwd: string,
+  file: import("./config/config.ts").ConfigFile,
+  sources: string[],
+): void {
+  const active = process.env.HARNESS_PROVIDER ?? file.provider ?? "openai";
+
+  stdout.write(`${c.bold("providers")} ${c.dim(`(${cwd})`)}\n\n`);
+  for (const { name, origin } of listProviders(file)) {
+    const mark = name === active ? c.green("●") : c.dim("○");
+    const tag = origin === "config" ? c.cyan("config") : c.dim("builtin");
+    const entry = file.providers?.[name];
+    const detail = entry?.baseUrl ?? entry?.model ?? "";
+    stdout.write(`  ${mark} ${name.padEnd(14)} ${tag} ${c.dim(detail)}\n`);
+  }
+  if (sources.length === 0) {
+    stdout.write(`\n${c.dim("no harness.json found; using built-in presets only")}\n`);
+  } else {
+    stdout.write(`\n${c.dim(`sources: ${sources.join(", ")}`)}\n`);
+  }
+  stdout.write(`\n${c.dim("use with: --provider <name>   or   HARNESS_PROVIDER=<name>")}\n`);
+}
+
+function printConfig(config: import("./config/config.ts").Config, cwd: string): void {
+  const p = config.provider;
+  stdout.write(
+    [
+      `${c.bold("provider")}  ${p.name}${p.builtin ? c.dim(" (builtin)") : ""}`,
+      `${c.bold("baseUrl")}   ${p.baseUrl}`,
+      `${c.bold("model")}     ${p.model}`,
+      `${c.bold("context")}   ${p.contextWindow} tokens`,
+      `${c.bold("apiKey")}    ${
+        p.apiKey
+          ? c.green("set")
+          : isLocalUrl(p.baseUrl)
+            ? c.dim("not needed (local endpoint)")
+            : `${c.red("missing")} ${c.dim(`set ${p.keyHint}`)}`
+      }`,
+      `${c.bold("mode")}      ${config.mode}`,
+      `${c.bold("maxSteps")}  ${config.maxSteps}`,
+      `${c.bold("rules")}     ${config.rules.length}`,
+      ...(Object.keys(p.headers).length
+        ? [`${c.bold("headers")}   ${Object.keys(p.headers).join(", ")}`]
+        : []),
+      `${c.bold("sources")}   ${config.sources.length ? config.sources.join(", ") : c.dim("none")}`,
+      `${c.bold("cwd")}       ${cwd}`,
+    ].join("\n") + "\n",
   );
 }
 
@@ -225,29 +333,59 @@ Usage
   harness [prompt] [options]
 
 Options
+  --provider <name>            provider profile (see --list-providers)
+  --model <name>               model id (overrides the profile)
   --mode <plan|default|yolo>   permission mode (default: default)
-  --model <name>               model id
   --resume <session.jsonl>     resume a transcript
   --cwd <dir>                  workspace (default: current directory)
+  --list-providers             list built-in and configured providers
+  --config                     show the resolved configuration
   -h, --help                   show this help
 
 Environment
-  HARNESS_API_KEY      API key (falls back to OPENAI_API_KEY)
-  HARNESS_BASE_URL     OpenAI-compatible base URL
-  HARNESS_MODEL        model id
-  HARNESS_MODE         permission mode
+  HARNESS_PROVIDER        profile name from harness.json (default: openai)
+  HARNESS_API_KEY         key for any provider (overrides the profile's env)
+  HARNESS_BASE_URL        OpenAI-compatible base URL
+  HARNESS_MODEL           model id
+  HARNESS_MODE            permission mode
   HARNESS_CONTEXT_WINDOW  context window in tokens
 
 Config
-  harness.json in the workspace: { "model", "baseUrl", "mode", "rules", "maxSteps" }
+  ~/.config/harness/harness.json   user-level profiles
+  ./harness.json                   project profiles (wins)
+
+  {
+    "provider": "my-gateway",
+    "providers": {
+      "my-gateway": {
+        "baseUrl": "https://llm.example.com/v1",
+        "model": "qwen3-coder",
+        "apiKeyEnv": "GATEWAY_KEY",
+        "contextWindow": 131072,
+        "headers": { "X-Org": "cabroe" }
+      }
+    }
+  }
+
+  Any OpenAI-compatible endpoint works (OpenAI, OpenRouter, Groq, Mistral,
+  Ollama, vLLM, LM Studio, LiteLLM, gateways). Secrets stay in env: set
+  apiKeyEnv, not apiKey.
 `);
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { cwd: process.cwd(), help: false };
+  const args: Args = {
+    cwd: process.cwd(),
+    help: false,
+    listProviders: false,
+    showConfig: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "-h" || arg === "--help") args.help = true;
+    else if (arg === "--provider" || arg === "-p") args.provider = argv[++i];
+    else if (arg === "--list-providers") args.listProviders = true;
+    else if (arg === "--config") args.showConfig = true;
     else if (arg === "--mode") args.mode = argv[++i] as Args["mode"];
     else if (arg === "--model") args.model = argv[++i];
     else if (arg === "--resume") args.resume = argv[++i];

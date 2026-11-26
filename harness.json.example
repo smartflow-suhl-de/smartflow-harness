@@ -1,11 +1,39 @@
 {
-  "model": "gpt-4.1-mini",
-  "baseUrl": "https://api.openai.com/v1",
-  "contextWindow": 128000,
+  "provider": "openai",
+  "providers": {
+    "openai": {
+      "baseUrl": "https://api.openai.com/v1",
+      "model": "gpt-4.1-mini",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "contextWindow": 128000
+    },
+    "openrouter": {
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "model": "anthropic/claude-sonnet-4.6",
+      "apiKeyEnv": "OPENROUTER_API_KEY",
+      "contextWindow": 200000
+    },
+    "local": {
+      "description": "Ollama / vLLM / LM Studio auf diesem Rechner",
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "model": "qwen3-coder",
+      "contextWindow": 32768
+    },
+    "my-gateway": {
+      "description": "Eigener Endpoint, OpenAI-kompatibel",
+      "baseUrl": "https://llm.example.com/v1",
+      "model": "your-model",
+      "apiKeyEnv": "GATEWAY_API_KEY",
+      "contextWindow": 131072,
+      "headers": {
+        "X-Org": "cabroe"
+      }
+    }
+  },
   "mode": "default",
   "maxSteps": 60,
   "rules": [
-    { "tool": "bash", "pattern": "^(ls|cat|git status|git diff|git log)", "action": "allow" },
+    { "tool": "bash", "pattern": "^(ls|cat|git status|git diff|git log|rg)", "action": "allow" },
     { "tool": "bash", "pattern": "^git push", "action": "ask" }
   ]
 }

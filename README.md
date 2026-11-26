@@ -3,17 +3,20 @@
 Ein eigener Coding-Agent-Harness. Klein, lesbar, ohne Framework.
 
 ```bash
-export HARNESS_API_KEY="$(cat ~/.config/harness/key)"
-export HARNESS_MODEL=gpt-4.1-mini      # oder claude-sonnet-4-6 via Gateway
+cp harness.json.example harness.json    # Provider-Profile anlegen
+export OPENAI_API_KEY=...               # oder GATEWAY_API_KEY etc.
 node src/cli.ts "fix the failing test in tests/"
 ```
 
 ```bash
-node src/cli.ts            # interaktiv
-node src/cli.ts --plan     # read-only (Plan-Modus)
-node src/cli.ts --yolo     # keine Rückfragen (Hardline-Floor bleibt)
-npm test                   # 17 Tests, node --test
-npm run typecheck          # tsc --noEmit
+node src/cli.ts                  # interaktiv
+node src/cli.ts --plan           # read-only (Plan-Modus)
+node src/cli.ts --yolo           # keine Rückfragen (Hardline-Floor bleibt)
+node src/cli.ts --provider local # anderes Profil
+node src/cli.ts --list-providers # verfügbare Provider
+node src/cli.ts --config         # aufgelöste Konfiguration
+npm test                         # 29 Tests, node --test
+npm run typecheck                # tsc --noEmit
 ```
 
 Kein Build-Step: Node ≥24 führt `.ts` direkt aus (Type Stripping).
@@ -28,6 +31,7 @@ Kein Build-Step: Node ≥24 führt `.ts` direkt aus (Type Stripping).
 | Kontext | `src/context/` | `AGENTS.md`/`CLAUDE.md`/`CONTEXT.md` hierarchisch, Threshold-Compaction |
 | Safety | `src/safety/permissions.ts` | plan/default/yolo, Regeln als JSON, Hardline-Floor |
 | Sessions | `src/core/session.ts` | append-only JSONL, resume |
+| Provider-Profile | `src/config/providers.ts` | Presets + eigene Endpoints, Env/Datei/CLI |
 | CLI | `src/cli.ts` | REPL + one-shot |
 
 ## Warum so gebaut
@@ -38,7 +42,8 @@ mit Quellen. Kurzfassung:
 - **Linearer Loop, ein Tool zuerst.** Mini-SWE-Agent zeigt: ~100 Zeilen reichen
   für SWE-bench-Niveau. Ausbau nur bei beobachtetem Failure-Mode.
 - **Eine OpenAI-kompatible Provider-Schicht.** Deckt fast alle Provider ab, ein
-  Adapter statt N.
+  Adapter statt N. Provider sind Daten (Profile), nicht Code — neuer Endpoint
+  heißt neuer JSON-Block, kein Build.
 - **Kein RAG über Code.** ripgrep + glob + LSP; Embeddings sind bei Code sofort
   stale.
 - **Keine Agent-Frameworks.** 0 von 11 Produktions-Harnessen nutzen LangChain &
@@ -46,26 +51,79 @@ mit Quellen. Kurzfassung:
 - **Permissions als Daten.** Regeln in `harness.json`, last-match-wins, plus
   Hardline-Patterns, die auch `--yolo` nicht umgeht.
 
-## Konfiguration
+## Provider
 
-`harness.json` im Workspace (geheimnisfrei, darf committed werden):
+Jeder OpenAI-kompatible Endpoint ist ein Profil — kein Code nötig.
+Profile stehen in `harness.json`, entweder im Projekt oder global unter
+`~/.config/harness/harness.json` (Projekt gewinnt, Feld für Feld).
 
 ```json
 {
-  "model": "gpt-4.1-mini",
-  "baseUrl": "https://openrouter.ai/api/v1",
-  "contextWindow": 128000,
+  "provider": "my-gateway",
+  "providers": {
+    "my-gateway": {
+      "baseUrl": "https://llm.example.com/v1",
+      "model": "qwen3-coder",
+      "apiKeyEnv": "GATEWAY_API_KEY",
+      "contextWindow": 131072,
+      "headers": { "X-Org": "cabroe" }
+    },
+    "local": {
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "model": "qwen3-coder",
+      "contextWindow": 32768
+    }
+  }
+}
+```
+
+```bash
+node src/cli.ts --provider my-gateway "refactor src/tools"
+HARNESS_PROVIDER=local node src/cli.ts      # oder per Env
+```
+
+Im REPL: `/provider` zeigt alle, `/provider local` wechselt live.
+
+Eingebaute Presets (nur Defaults, überschreibbar): `openai`, `openrouter`,
+`groq`, `mistral`, `ollama`, `lmstudio`.
+
+Felder eines Profils:
+
+| Feld | Bedeutung |
+|---|---|
+| `baseUrl` | OpenAI-kompatibler Endpoint (Pflicht) |
+| `model` | Modell-ID beim Provider |
+| `apiKeyEnv` | Env-Variable mit dem Key — **bevorzugt** |
+| `apiKey` | Key inline (nur für Wegwerf-Setups) |
+| `contextWindow` | Fenster in Tokens, steuert Compaction |
+| `headers` | Extra-Header, z. B. Org oder Gateway-Routing |
+| `description` | Freitext, erscheint in `--list-providers` |
+
+Secrets bleiben aus der Datei: `apiKeyEnv` benennen, Key per Env setzen.
+Lokale Endpoints (127.0.0.1/localhost) brauchen keinen Key.
+
+### Auflösungsreihenfolge
+
+1. `--provider` (CLI)
+2. `HARNESS_*`-Env (`HARNESS_MODEL`, `HARNESS_BASE_URL`, `HARNESS_API_KEY`, `HARNESS_CONTEXT_WINDOW`)
+3. `providers.<name>` in `harness.json`
+4. eingebautes Preset
+5. alte flache Felder (`model`, `baseUrl`) — bleiben gültig
+
+## Konfiguration
+
+```json
+{
   "mode": "default",
   "maxSteps": 60,
   "rules": [
-    { "tool": "bash", "pattern": "^git ", "action": "allow" },
+    { "tool": "bash", "pattern": "^(ls|cat|git status)", "action": "allow" },
     { "tool": "bash", "pattern": "^git push", "action": "ask" }
   ]
 }
 ```
 
-Secrets nur per Env: `HARNESS_API_KEY`, `HARNESS_BASE_URL`, `HARNESS_MODEL`,
-`HARNESS_MODE`, `HARNESS_CONTEXT_WINDOW`, `HARNESS_MAX_STEPS`.
+Weitere Env-Variablen: `HARNESS_MODE`, `HARNESS_MAX_STEPS`.
 
 ## Projektkontext
 
@@ -94,7 +152,8 @@ src/
   safety/
     permissions.ts       Modi, Regeln, Hardline
   config/
-    config.ts            Env > harness.json > Defaults
+    config.ts            Dateien laden/mergen, Env > Projekt > User
+    providers.ts         Profile auflösen, Presets, Validierung
 tests/                   node --test
 docs/RESEARCH.md         Recherche + Begründungen
 ```
