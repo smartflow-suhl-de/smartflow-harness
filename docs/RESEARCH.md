@@ -179,6 +179,7 @@ oder echte OS-Sandbox nötig wird, ist der Loop klein genug zum Portieren.
 | Loop | linear, eine Funktion | Empfehlung 1; Middleware später |
 | Provider | **eine** OpenAI-kompatible Schicht | deckt OpenAI, OpenRouter, Groq, Mistral, Ollama, vLLM, LM Studio ab |
 | Provider-Auswahl | **Profile als Daten** (`providers` in `harness.json`) | neuer Endpoint = neuer JSON-Block; Secrets per `apiKeyEnv`, nie in der Datei |
+| Setup-Fluss | **Start ohne Provider, `/connect` im REPL** | ein Harness, der ohne Key aussteigt, ist unbenutzbar; Setup gehört in die Laufzeit, nicht in einen Preflight |
 | Tools | bash, read, write, edit, glob, grep | Empfehlung 3, in der beobachteten Reihenfolge |
 | Edit | exakt → whitespace-tolerant Cascade | Empfehlung 5; nie zeilenbasiert |
 | Kontext | `AGENTS.md`/`CLAUDE.md`/`CONTEXT.md` hierarchisch | Empfehlung 6 |

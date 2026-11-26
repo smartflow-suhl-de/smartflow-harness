@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { loadConfig, readConfigFiles } from "./config/config.ts";
+import { loadCredentials } from "./config/credentials.ts";
+import { connect } from "./ui/connect.ts";
 import { ConfigError, isLocalUrl, listProviders, resolveProvider, type ResolvedProvider } from "./config/providers.ts";
 import { loadContextFiles } from "./context/files.ts";
 import { runAgent } from "./core/loop.ts";
@@ -48,9 +50,13 @@ async function main(): Promise<void> {
     return;
   }
 
-  let config;
+  const credentials = await loadCredentials();
+  let config: Awaited<ReturnType<typeof loadConfig>>;
   try {
-    config = await loadConfig(cwd, { ...(args.provider ? { provider: args.provider } : {}) });
+    config = await loadConfig(cwd, {
+      ...(args.provider ? { provider: args.provider } : {}),
+      credentials: credentials.providers,
+    });
   } catch (err) {
     if (err instanceof ConfigError) {
       console.error(`${c.red("config:")} ${err.message}`);
@@ -63,22 +69,13 @@ async function main(): Promise<void> {
   if (args.model) config.provider.model = args.model;
 
   let active = config.provider;
-  let provider = buildProvider(active);
+  // Built lazily: the REPL must start even with no provider connected.
+  let provider: OpenAiCompatibleProvider | undefined;
+  const getProvider = () => (provider ??= buildProvider(active));
+  const isConnected = () => Boolean(active.apiKey) || isLocalUrl(active.baseUrl);
 
   if (args.showConfig) {
     printConfig(config, cwd);
-    return;
-  }
-
-  if (!active.apiKey && !isLocalUrl(active.baseUrl)) {
-    console.error(
-      c.red("No API key.") +
-        ` For provider "${active.name}" set ${c.bold(active.keyHint)}` +
-        ` (or HARNESS_API_KEY), or point the base URL at a local server.\n` +
-        c.dim(`  harness --list-providers     see configured providers\n`) +
-        c.dim(`  HARNESS_PROVIDER=${active.name} HARNESS_MODEL=${active.model} harness "task"`),
-    );
-    process.exitCode = 1;
     return;
   }
 
@@ -155,13 +152,19 @@ async function main(): Promise<void> {
   });
 
   const runTurn = async (input: string) => {
+    if (!isConnected()) {
+      stdout.write(
+        `${c.yellow("not connected")} — run ${c.bold("/connect")} to set up a provider\n`,
+      );
+      return;
+    }
     await session.append({ role: "user", content: input });
     abortController = new AbortController();
     running = true;
     try {
       const result = await runAgent({
         session,
-        provider,
+        provider: getProvider(),
         tools,
         permissions,
         systemPrompt,
@@ -179,12 +182,21 @@ async function main(): Promise<void> {
   };
 
   if (args.prompt) {
+    if (!isConnected()) {
+      console.error(
+        `${c.yellow("not connected:")} provider "${active.name}" has no key.\n` +
+          `  Run ${c.bold("harness")} and use ${c.bold("/connect")}, or set ${active.keyHint}.`,
+      );
+      process.exitCode = 1;
+      rl.close();
+      return;
+    }
     await runTurn(args.prompt);
     rl.close();
     return;
   }
 
-  printBanner(active, permissions.mode, session);
+  printBanner(active, permissions.mode, session, isConnected());
   for (;;) {
     let line: string;
     try {
@@ -205,27 +217,25 @@ async function main(): Promise<void> {
           permissions.mode = mode;
           stdout.write(c.dim(`mode: ${mode}\n`));
         } else stdout.write(c.yellow("usage: /mode plan|default|yolo\n"));
-      } else if (command === "provider") {
-        if (!rest[0]) {
-          stdout.write(c.dim(`active: ${active.name} (${active.model})\n`));
-          stdout.write(
-            listProviders(config.file)
-              .map((p) => `  ${p.name === active.name ? c.green("●") : c.dim("○")} ${p.name}`)
-              .join("\n") + "\n",
-          );
-          continue;
-        }
-        try {
-          const next = resolveProvider({ file: config.file, providerName: rest[0] });
-          active = next;
-          provider = buildProvider(next);
-          config.provider = next;
-          stdout.write(c.dim(`provider: ${next.name} · ${next.model} · ${next.baseUrl}\n`));
-          if (!next.apiKey && !isLocalUrl(next.baseUrl)) {
-            stdout.write(c.yellow(`  no key: set ${next.keyHint}\n`));
-          }
-        } catch (err) {
-          stdout.write(c.yellow(`${(err as Error).message}\n`));
+      } else if (command === "connect") {
+        const ok = await connect({
+          config,
+          cwd,
+          io: {
+            question: (q) => rl.question(q),
+            write: (t) => stdout.write(t),
+            secret: (q) => askSecret(rl, q),
+          },
+          args: rest,
+        });
+        if (ok) {
+          config = await loadConfig(cwd, {
+            credentials: (await loadCredentials()).providers,
+          });
+          active = config.provider;
+          provider = undefined;
+          permissions.mode = config.mode;
+          stdout.write(c.dim(`ready: ${active.name} · ${active.model}\n`));
         }
       } else if (command === "session") {
         stdout.write(c.dim(`${session.meta.id}  ${session.path}\n`));
@@ -244,19 +254,73 @@ async function main(): Promise<void> {
   stdout.write(c.dim(`session: ${session.path}\n`));
 }
 
-function printBanner(active: ResolvedProvider, mode: string, session: Session): void {
+function printBanner(
+  active: ResolvedProvider,
+  mode: string,
+  session: Session,
+  connected: boolean,
+): void {
+  const status = connected ? c.green("connected") : c.yellow("not connected");
   stdout.write(
-    `${c.bold("harness")} ${c.dim(VERSION)}  ${c.dim("provider")} ${active.name}  ${c.dim("model")} ${active.model}  ${c.dim("mode")} ${mode}\n` +
-      `${c.dim(`session ${session.meta.id} · /help for commands · ctrl+c to interrupt`)}\n\n`,
+    `${c.bold("harness")} ${c.dim(VERSION)}  ${c.dim("provider")} ${active.name}  ${c.dim("model")} ${active.model}  ${c.dim("mode")} ${mode}  ${status}\n`,
   );
+  if (!connected) {
+    stdout.write(
+      `${c.dim(`  no key for "${active.name}". run `)}${c.bold("/connect")}${c.dim(" to set one up · /help for commands")}\n`,
+    );
+  } else {
+    stdout.write(c.dim(`  session ${session.meta.id} · /help for commands · ctrl+c to interrupt`) + "\n");
+  }
+  stdout.write("\n");
+}
+
+/** Read a key without echoing it. Falls back to plain input when not a TTY. */
+async function askSecret(rl: ReturnType<typeof createInterface>, prompt: string): Promise<string> {
+  if (!stdin.isTTY || !stdout.isTTY) return rl.question(prompt);
+
+  return new Promise<string>((resolvePromise) => {
+    stdout.write(prompt);
+    const wasRaw = stdin.isRaw;
+    stdin.setRawMode?.(true);
+    stdin.resume();
+
+    let value = "";
+    const onData = (chunk: Buffer) => {
+      for (const byte of chunk) {
+        const ch = String.fromCharCode(byte);
+        if (ch === "\r" || ch === "\n") {
+          cleanup();
+          stdout.write("\n");
+          resolvePromise(value);
+          return;
+        }
+        if (byte === 3) {
+          cleanup();
+          stdout.write("\n");
+          process.exit(130);
+        }
+        if (byte === 127 || byte === 8) {
+          value = value.slice(0, -1);
+          continue;
+        }
+        if (byte < 32) continue;
+        value += ch;
+      }
+    };
+    const cleanup = () => {
+      stdin.off("data", onData);
+      stdin.setRawMode?.(wasRaw ?? false);
+    };
+    stdin.on("data", onData);
+  });
 }
 
 function printCommands(): void {
   stdout.write(
     [
       "/help              show this help",
-      "/mode plan|default|yolo",
-      "/provider [name]   show or switch provider",
+      "/connect [name|url]  set up a provider: key, endpoint, test, save",
+      "/mode plan|default|yolo   switch permission mode",
       "/session           show session id and transcript path",
       "/exit              quit",
       "",
@@ -307,13 +371,7 @@ function printConfig(config: import("./config/config.ts").Config, cwd: string): 
       `${c.bold("baseUrl")}   ${p.baseUrl}`,
       `${c.bold("model")}     ${p.model}`,
       `${c.bold("context")}   ${p.contextWindow} tokens`,
-      `${c.bold("apiKey")}    ${
-        p.apiKey
-          ? c.green("set")
-          : isLocalUrl(p.baseUrl)
-            ? c.dim("not needed (local endpoint)")
-            : `${c.red("missing")} ${c.dim(`set ${p.keyHint}`)}`
-      }`,
+      `${c.bold("apiKey")}    ${keyStatus(p)}`,
       `${c.bold("mode")}      ${config.mode}`,
       `${c.bold("maxSteps")}  ${config.maxSteps}`,
       `${c.bold("rules")}     ${config.rules.length}`,
@@ -324,6 +382,23 @@ function printConfig(config: import("./config/config.ts").Config, cwd: string): 
       `${c.bold("cwd")}       ${cwd}`,
     ].join("\n") + "\n",
   );
+}
+
+function keyStatus(p: ResolvedProvider): string {
+  switch (p.keySource) {
+    case "env":
+      return `${c.green("set")} ${c.dim("from HARNESS_API_KEY")}`;
+    case "apiKeyEnv":
+      return `${c.green("set")} ${c.dim(`from $${p.apiKeyEnv ?? "env"}`)}`;
+    case "stored":
+      return `${c.green("set")} ${c.dim("from credentials store")}`;
+    case "inline":
+      return `${c.green("set")} ${c.dim("inline in harness.json")}`;
+    case "none":
+      return isLocalUrl(p.baseUrl)
+        ? c.dim("not needed (local endpoint)")
+        : `${c.red("missing")} ${c.dim(`run /connect or set ${p.keyHint}`)}`;
+  }
 }
 
 function printHelp(): void {

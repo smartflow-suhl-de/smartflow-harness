@@ -61,6 +61,8 @@ export interface ResolvedProvider {
   headers: Record<string, string>;
   /** Environment variable hints shown when the key is missing. */
   keyHint: string;
+  /** Where the key came from; used by `--config` and `/connect`. */
+  keySource: "env" | "apiKeyEnv" | "stored" | "inline" | "none";
 }
 
 export class ConfigError extends Error {}
@@ -79,6 +81,8 @@ export function resolveProvider(opts: {
   file?: ConfigFile;
   env?: NodeJS.ProcessEnv;
   providerName?: string;
+  /** Keys collected by `/connect`, keyed by profile name. */
+  credentials?: Record<string, { apiKey?: string }>;
 }): ResolvedProvider {
   const env = opts.env ?? process.env;
   const file = opts.file ?? {};
@@ -111,12 +115,19 @@ export function resolveProvider(opts: {
   const merged: ProviderEntry = { ...(builtin ?? {}), ...legacy, ...(entry ?? {}) };
 
   const apiKeyEnv = merged.apiKeyEnv ?? (selected === "openai" ? "OPENAI_API_KEY" : undefined);
-  const apiKey =
-    env.HARNESS_API_KEY ??
-    (merged.apiKeyEnv ? env[merged.apiKeyEnv] : undefined) ??
-    env.OPENAI_API_KEY ??
-    merged.apiKey ??
-    "";
+  const fromEnv = env.HARNESS_API_KEY ?? (merged.apiKeyEnv ? env[merged.apiKeyEnv] : undefined);
+  const stored = opts.credentials?.[selected]?.apiKey;
+  const chosen = fromEnv ?? stored ?? env.OPENAI_API_KEY ?? merged.apiKey ?? "";
+  const apiKey = chosen;
+  const keySource: ResolvedProvider["keySource"] = fromEnv
+    ? env.HARNESS_API_KEY
+      ? "env"
+      : "apiKeyEnv"
+    : stored
+      ? "stored"
+      : merged.apiKey
+        ? "inline"
+        : "none";
 
   const baseUrl = env.HARNESS_BASE_URL ?? env.OPENAI_BASE_URL ?? merged.baseUrl;
   if (!baseUrl) {
@@ -141,6 +152,7 @@ export function resolveProvider(opts: {
     contextWindow,
     headers: { ...(merged.headers ?? {}) },
     keyHint: apiKeyEnv ? `$${apiKeyEnv}` : 'harness.json providers.<name>.apiKeyEnv',
+    keySource,
   };
 }
 

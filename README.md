@@ -3,8 +3,13 @@
 Ein eigener Coding-Agent-Harness. Klein, lesbar, ohne Framework.
 
 ```bash
-cp harness.json.example harness.json    # Provider-Profile anlegen
-export OPENAI_API_KEY=...               # oder GATEWAY_API_KEY etc.
+node src/cli.ts              # startet immer — auch ohne Key
+/connect                     # Provider einrichten: Key, Test, speichern
+```
+
+Danach läuft es ohne Neustart:
+
+```bash
 node src/cli.ts "fix the failing test in tests/"
 ```
 
@@ -15,7 +20,7 @@ node src/cli.ts --yolo           # keine Rückfragen (Hardline-Floor bleibt)
 node src/cli.ts --provider local # anderes Profil
 node src/cli.ts --list-providers # verfügbare Provider
 node src/cli.ts --config         # aufgelöste Konfiguration
-npm test                         # 29 Tests, node --test
+npm test                         # 45 Tests, node --test
 npm run typecheck                # tsc --noEmit
 ```
 
@@ -32,6 +37,7 @@ Kein Build-Step: Node ≥24 führt `.ts` direkt aus (Type Stripping).
 | Safety | `src/safety/permissions.ts` | plan/default/yolo, Regeln als JSON, Hardline-Floor |
 | Sessions | `src/core/session.ts` | append-only JSONL, resume |
 | Provider-Profile | `src/config/providers.ts` | Presets + eigene Endpoints, Env/Datei/CLI |
+| `/connect` | `src/ui/connect.ts` | Provider einrichten ohne Neustart, Key-Test, Persistenz |
 | CLI | `src/cli.ts` | REPL + one-shot |
 
 ## Warum so gebaut
@@ -52,6 +58,25 @@ mit Quellen. Kurzfassung:
   Hardline-Patterns, die auch `--yolo` nicht umgeht.
 
 ## Provider
+
+**Der Harness startet immer**, auch ohne Key. Fehlt einer, zeigt die Statuszeile
+`not connected` und `/connect` richtet alles ein — ohne Neustart.
+
+```
+/connect                      # Provider wählen, Key eingeben, testen
+/connect openrouter           # bekanntes Profil, fragt nur das Fehlende
+/connect https://llm.x/v1 lokal   # eigener Endpoint mit Namen
+```
+
+`/connect` prüft den Endpoint per `GET /models` (kostenlos), listet die
+verfügbaren Modelle und speichert:
+
+- Profil in `~/.config/harness/harness.json` (oder `$HARNESS_HOME`)
+- Key in `~/.config/harness/credentials.json`, Modus `0600`
+
+Reihenfolge der Key-Quelle: `HARNESS_API_KEY` > `apiKeyEnv`-Variable >
+Credentials-Store > `apiKey` in der Datei. Lokale Endpoints brauchen keinen Key;
+antworten sie mit 401, fragt `/connect` reaktiv nach.
 
 Jeder OpenAI-kompatible Endpoint ist ein Profil — kein Code nötig.
 Profile stehen in `harness.json`, entweder im Projekt oder global unter
@@ -109,6 +134,23 @@ Lokale Endpoints (127.0.0.1/localhost) brauchen keinen Key.
 3. `providers.<name>` in `harness.json`
 4. eingebautes Preset
 5. alte flache Felder (`model`, `baseUrl`) — bleiben gültig
+
+### Manuell statt `/connect`
+
+Profile lassen sich auch direkt schreiben — nützlich für Repos und CI:
+
+```json
+{
+  "provider": "my-gateway",
+  "providers": {
+    "my-gateway": {
+      "baseUrl": "https://llm.example.com/v1",
+      "model": "qwen3-coder",
+      "apiKeyEnv": "GATEWAY_API_KEY"
+    }
+  }
+}
+```
 
 ## Konfiguration
 

@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Mode, Rule } from "../safety/permissions.ts";
@@ -49,21 +49,27 @@ export interface Config {
 }
 
 /** Config sources, lowest precedence first. */
-export async function configPaths(cwd: string): Promise<string[]> {
-  const user = join(homedir(), ".config", "harness", "harness.json");
-  return [user, join(cwd, "harness.json")];
+export async function configPaths(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string[]> {
+  const home = env.HARNESS_HOME ?? join(homedir(), ".config", "harness");
+  return [join(home, "harness.json"), join(cwd, "harness.json")];
 }
 
 /**
  * Precedence: env > project harness.json > user harness.json > defaults.
  * `providers` maps are merged shallowly (project profile wins whole).
  */
-export async function readConfigFiles(cwd: string): Promise<{ file: ConfigFile; sources: string[] }> {
+export async function readConfigFiles(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ file: ConfigFile; sources: string[] }> {
   const sources: string[] = [];
   const merged: ConfigFile = {};
   const providers: Record<string, ProviderEntry> = {};
 
-  for (const path of await configPaths(cwd)) {
+  for (const path of await configPaths(cwd, env)) {
     const parsed = await readJson(path);
     if (!parsed) continue;
     sources.push(path);
@@ -77,12 +83,21 @@ export async function readConfigFiles(cwd: string): Promise<{ file: ConfigFile; 
 
 export async function loadConfig(
   cwd: string,
-  opts: { env?: NodeJS.ProcessEnv; provider?: string } = {},
+  opts: {
+    env?: NodeJS.ProcessEnv;
+    provider?: string;
+    credentials?: Record<string, { apiKey?: string }>;
+  } = {},
 ): Promise<Config> {
   const env = opts.env ?? process.env;
-  const { file, sources } = await readConfigFiles(cwd);
+  const { file, sources } = await readConfigFiles(cwd, env);
 
-  const provider = resolveProvider({ file, env, ...(opts.provider ? { providerName: opts.provider } : {}) });
+  const provider = resolveProvider({
+    file,
+    env,
+    ...(opts.provider ? { providerName: opts.provider } : {}),
+    ...(opts.credentials ? { credentials: opts.credentials } : {}),
+  });
 
   return {
     provider,
@@ -93,6 +108,31 @@ export async function loadConfig(
     sources,
     file,
   };
+}
+
+/**
+ * Persist profile changes made by `/connect`. Writes only the user-level file,
+ * so a project config stays untouched and keeps winning where it sets fields.
+ */
+export async function saveUserConfig(
+  patch: ConfigFile,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string> {
+  const dir = env.HARNESS_HOME ?? join(homedir(), ".config", "harness");
+  const path = join(dir, "harness.json");
+  const existing = (await readJson(path)) ?? {};
+
+  const providers: Record<string, ProviderEntry> = { ...(existing.providers ?? {}) };
+  for (const [name, entry] of Object.entries(patch.providers ?? {})) {
+    providers[name] = { ...providers[name], ...entry };
+  }
+
+  const next: ConfigFile = { ...existing, ...stripKeys(patch, ["providers"]) };
+  if (Object.keys(providers).length > 0) next.providers = providers;
+
+  await mkdir(dir, { recursive: true });
+  await writeFile(path, JSON.stringify(next, null, 2) + "\n", "utf8");
+  return path;
 }
 
 async function readJson(path: string): Promise<ConfigFile | undefined> {
