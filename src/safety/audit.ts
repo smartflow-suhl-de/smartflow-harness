@@ -49,6 +49,22 @@ export interface AuditLogOptions {
 
 const DEFAULT_MAX_BYTES = 10 * 1024 * 1024;
 
+/**
+ * Strip the obvious secret shapes from a command before it reaches the log.
+ * This is a safety net, not a parser: anything that looks like a token, a
+ * key assignment or a bearer header is replaced, and the preview is short.
+ */
+export function redactCommand(command: string, max = 200): string {
+  const redacted = command
+    .replace(/(?:--?[a-z0-9-]*(?:key|token|secret|password|passwd|pwd)[a-z0-9-]*)(?:=|\s+)(?:"[^"]*"|'[^']*'|\S+)/gi, "$1=<redacted>")
+    .replace(/(?:\b[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD)[A-Z0-9_]*=)(?:"[^"]*"|'[^']*'|\S+)/g, "$1<redacted>")
+    .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+\/-]+=*/gi, (m) => `${m.split(/\s+/)[0]} <redacted>`)
+    .replace(/\b(?:sk|pk|ghp|gho|ghs|xox[baprs])[-_][A-Za-z0-9_-]{12,}/g, "<redacted>")
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, "<redacted>")
+    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+/g, "<redacted>");
+  return redacted.length > max ? `${redacted.slice(0, max)}…` : redacted;
+}
+
 export function hashArgs(args: Record<string, unknown>): string {
   const stable = JSON.stringify(args, Object.keys(args).sort());
   return createHash("sha256").update(stable).digest("hex").slice(0, 32);
@@ -67,6 +83,11 @@ export class AuditLog {
     this.disabled = opts.disabled ?? false;
     this.maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
     this.onError = opts.onError;
+  }
+
+  /** Wait until every queued line is written. Call before process exit. */
+  async flush(): Promise<void> {
+    await this.writeChain;
   }
 
   /** Append one entry. Resolves when the line is on disk (or was dropped). */

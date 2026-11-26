@@ -53,19 +53,22 @@ const READONLY_SYSTEM_DIRS = [
   "/nix",
 ];
 
-/** Directories bwrap needs for its own setup but that stay invisible afterwards. */
-const BWRAP_INTERNAL = ["/proc", "/sys", "/dev/pts", "/dev/ptmx", "/dev/shm"];
-
 export class Sandbox {
   readonly mode: SandboxMode;
   readonly network: boolean;
   private readonly extraWritable: string[];
   readonly bwrap: string | undefined;
+  private probeResult: Promise<{ ok: boolean; reason?: string }> | undefined;
 
   constructor(cfg: SandboxConfig = {}) {
     this.mode = cfg.mode ?? "auto";
     this.network = cfg.network ?? false;
-    this.extraWritable = (cfg.writablePaths ?? []).map(resolvePathSafely).filter((p): p is string => Boolean(p));
+    this.extraWritable = (cfg.writablePaths ?? [])
+      .map(resolvePathSafely)
+      .filter((p): p is string => Boolean(p))
+      // A writable path that contains (or sits inside) a read-only system dir
+      // would undo the ro-bind; such config is ignored, not silently honoured.
+      .filter((p) => !overlapsSystemDir(p));
     // An explicit bwrapPath always wins, including "" which forces "missing" (tests).
     this.bwrap = cfg.bwrapPath !== undefined ? cfg.bwrapPath || undefined : findOnPath("bwrap");
   }
@@ -85,12 +88,27 @@ export class Sandbox {
   async runWithFallback(
     opts: { cwd: string; command: string; env: Record<string, string> },
     onFallback?: (reason: string) => void,
-  ): Promise<{ kind: "bwrap" | "none"; note?: string }> {
+  ): Promise<{ kind: "bwrap" | "none"; note?: string; strict?: boolean }> {
     const plan = this.plan(opts);
     if (plan.kind !== "bwrap") {
       return { kind: "none", ...(plan.note ? { note: plan.note } : {}) };
     }
 
+    // The probe costs a process per call; a host does not fix itself between
+    // two bash calls, so remember the verdict.
+    const cached = await this.probe();
+    if (cached.ok) return { kind: "bwrap" };
+    const reason = cached.reason ?? "bwrap cannot start here";
+    if (this.mode === "bwrap") {
+      // Strict mode is a promise, not a suggestion: refusing beats a silent
+      // unsandboxed run.
+      return { kind: "none", note: `${reason}; mode "bwrap" forbids the fallback, refusing to run`, strict: true };
+    }
+    onFallback?.(reason);
+    return { kind: "none", note: `${reason}; running unsandboxed` };
+  }
+
+  private async probeOnce(): Promise<{ ok: boolean; reason?: string }> {
     const { spawn } = await import("node:child_process");
     const probe = await new Promise<{ ok: boolean; stderr: string }>((resolve) => {
       let stderr = "";
@@ -104,10 +122,9 @@ export class Sandbox {
       child.on("close", (code) => resolve({ ok: code === 0, stderr }));
     });
 
-    if (probe.ok) return { kind: "bwrap" };
-    const reason = `bwrap cannot start here (${probe.stderr.trim().split("\n")[0] || "unknown error"}); running unsandboxed`;
-    onFallback?.(reason);
-    return { kind: "none", note: reason };
+    if (probe.ok) return { ok: true };
+    const first = probe.stderr.trim().split("\n")[0] || "unknown error";
+    return { ok: false, reason: `bwrap cannot start here (${first}); running unsandboxed` };
   }
 
   /**
@@ -119,24 +136,10 @@ export class Sandbox {
     if (!this.available()) {
       return { ok: false, reason: this.mode === "off" ? "sandbox off" : "bwrap not found" };
     }
-    const { spawn } = await import("node:child_process");
-    const args = ["--unshare-user", "--die-with-parent", "--ro-bind", "/", "/", "--", "/bin/true"];
-    return new Promise((resolve) => {
-      let stderr = "";
-      const child = spawn(this.bwrap!, args, { stdio: ["ignore", "ignore", "pipe"] });
-      child.stderr?.on("data", (c: Buffer) => {
-        if (stderr.length < 400) stderr += c.toString();
-      });
-      child.on("error", (err) => resolve({ ok: false, reason: err.message }));
-      child.on("close", (code) => {
-        if (code === 0) return resolve({ ok: true });
-        const first = stderr.trim().split("\n")[0] ?? "";
-        resolve({
-          ok: false,
-          reason: `bwrap cannot start here (${first || `exit ${code}`}); running unsandboxed`,
-        });
-      });
-    });
+    if (!this.probeResult) {
+      this.probeResult = this.probeOnce();
+    }
+    return this.probeResult;
   }
 
   /**
@@ -163,6 +166,9 @@ export class Sandbox {
     if (!cwd) {
       return { kind: "none", argv: [], note: `cannot resolve cwd ${opts.cwd}; running unsandboxed` };
     }
+    if (overlapsSystemDir(cwd)) {
+      return { kind: "none", argv: [], note: `cwd ${cwd} overlaps a system path; running unsandboxed` };
+    }
 
     const argv: string[] = [
       this.bwrap!,
@@ -172,26 +178,25 @@ export class Sandbox {
       "--unshare-ipc",
       "--unshare-uts",
       "--new-session",
+      // P0: the host env carries API keys; only an explicit whitelist may enter.
+      "--clearenv",
       "--setenv", "HOME", "/tmp",
       "--setenv", "TMPDIR", "/tmp",
-      "--dev", "/dev",
-      "--proc", "/proc",
-      "--tmpfs", "/tmp",
+      "--setenv", "PATH", SAFE_PATH,
+      "--setenv", "GIT_PAGER", "cat",
+      "--setenv", "PAGER", "cat",
+      "--setenv", "NO_COLOR", "1",
     ];
 
     if (!this.network) argv.push("--unshare-net");
 
-    // System paths read-only.
-    for (const dir of READONLY_SYSTEM_DIRS) {
-      if (!existsSync(dir)) continue;
-      argv.push("--ro-bind", dir, dir);
-    }
-
-    // bwrap's own bootstrapping paths must be bindable, otherwise --proc fails.
-    for (const p of BWRAP_INTERNAL) {
-      if (!existsSync(p)) continue;
-      argv.push("--ro-bind-try", p, p);
-    }
+    // Root read-only first: it gives one consistent tree, so /bin -> /usr/bin
+    // style symlinks resolve inside the namespace instead of pointing at
+    // paths that were never mounted. /proc, /dev and /tmp are overlaid below.
+    argv.push("--ro-bind", "/", "/");
+    argv.push("--dev", "/dev");
+    argv.push("--proc", "/proc");
+    argv.push("--tmpfs", "/tmp");
 
     // The workspace: writable. Extra paths: writable. Missing ones are skipped.
     argv.push("--bind", cwd, cwd);
@@ -213,14 +218,38 @@ export class Sandbox {
   }
 }
 
+/**
+ * Look up a binary without trusting PATH order. System directories win, so a
+ * project-local `./bwrap` or an attacker-prepended PATH entry cannot shadow
+ * the real sandbox binary.
+ */
+const SYSTEM_PATH_DIRS = ["/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+
 function findOnPath(name: string): string | undefined {
-  const pathEnv = process.env.PATH ?? "";
-  for (const dir of pathEnv.split(":")) {
-    if (!dir) continue;
+  for (const dir of SYSTEM_PATH_DIRS) {
+    const candidate = join(dir, name);
+    if (existsSync(candidate)) return candidate;
+  }
+  const dirs = (process.env.PATH ?? "").split(":").filter((d) => d.startsWith("/"));
+  for (const dir of dirs) {
+    if (SYSTEM_PATH_DIRS.includes(dir)) continue;
     const candidate = join(dir, name);
     if (existsSync(candidate)) return candidate;
   }
   return undefined;
+}
+
+/** PATH inside the sandbox: fixed, so a poisoned PATH cannot pick binaries. */
+const SAFE_PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+
+/**
+ * True when `child` is inside `parent` (or equal). A bind-mount of something
+ * that contains a read-only system directory would unlock it.
+ */
+function overlapsSystemDir(path: string): boolean {
+  const resolved = resolvePathSafely(path);
+  if (!resolved) return true;
+  return READONLY_SYSTEM_DIRS.some((sys) => resolved === sys || resolved.startsWith(sys + "/") || sys.startsWith(resolved + "/"));
 }
 
 function resolvePathSafely(path: string): string | undefined {

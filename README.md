@@ -28,7 +28,7 @@ harness --provider local    # anderes Profil
 harness --list-providers    # verfügbare Provider
 harness --config            # aufgelöste Konfiguration
 
-npm test                     # 158 Tests (baut vorher)
+npm test                     # 164 Tests (baut vorher)
 npm run typecheck            # tsc --noEmit
 npm run build                # dist/ für den harness-Bin
 ```
@@ -301,12 +301,18 @@ Weitere Env-Variablen: `HARNESS_MODE`, `HARNESS_MAX_STEPS`.
 `mode` ist `auto` (Default: bwrap nutzen, wenn es läuft), `bwrap` (verlangt
 Sandbox) oder `off`. In der Sandbox sind Systempfade read-only, der Workspace
 und `writablePaths` beschreibbar, das Netz ist zu und `$HOME` zeigt auf `/tmp`.
+In der Sandbox gilt eine feste `PATH`, ein leeres Environment (`--clearenv` — die
+API-Keys des Hosts bleiben draußen) und der Workspace als einziger Schreibort;
+`writablePaths` innerhalb von Systemverzeichnissen werden ignoriert.
+
 Kann bwrap auf dem Host nicht starten (Container ohne `CAP_SYS_ADMIN`, kein
-User-Namespace), läuft der Befehl ohne Sandbox weiter — mit sichtbarem Hinweis
-in der Ausgabe und im Audit-Log statt stillem Scheitern.
+User-Namespace), unterscheidet der Modus: `auto` läuft ohne Sandbox weiter mit
+sichtbarem Hinweis in Ausgabe, Banner und Audit-Log; `bwrap` verweigert den
+Befehl, statt still ungeschützt zu laufen.
 
 Das Audit-Log schreibt eine NDJSON-Zeile pro Tool-Aufruf (Entscheidung, Dauer,
-Exit, Sandbox-Modus); Argumente stehen nur als SHA-256-Hash drin. Env:
+Exit, Sandbox-Modus); Argumente stehen nur als SHA-256-Hash drin, Shell-Kommandos werden um Tokens
+und Keys bereinigt. Env:
 `HARNESS_SANDBOX=off`, `HARNESS_AUDIT=off`.
 
 ## Projektkontext

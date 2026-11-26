@@ -79,3 +79,48 @@ test("Sandbox: a bwrap that cannot start degrades with a reason instead of throw
   assert.match(result.note ?? "", /bwrap cannot start here/);
   assert.equal(reports.length, 1);
 });
+
+test("Sandbox: strict mode refuses instead of running unsandboxed", async () => {
+  const fake = join(await mkdtemp(join(tmpdir(), "harness-fake-bwrap2-")), "bwrap");
+  await writeFile(fake, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  const sandbox = new Sandbox({ mode: "bwrap", bwrapPath: fake });
+  if (process.platform !== "linux") return;
+  const result = await sandbox.runWithFallback({ cwd: tmpdir(), command: "echo hi", env: {} });
+  assert.equal(result.kind, "none");
+  assert.equal(result.strict, true);
+  assert.match(result.note ?? "", /forbids the fallback/);
+});
+
+test("Sandbox: the probe runs once, not once per command", async () => {
+  // count executions of the fake bwrap via its own log file
+  const dir = await mkdtemp(join(tmpdir(), "harness-count-bwrap-"));
+  const fake = join(dir, "bwrap");
+  await writeFile(fake, `#!/bin/sh\necho x >> ${join(dir, "calls")}\nexit 1\n`, { mode: 0o755 });
+  const sandbox = new Sandbox({ mode: "auto", bwrapPath: fake });
+  if (process.platform !== "linux") return;
+  await sandbox.runWithFallback({ cwd: tmpdir(), command: "echo 1", env: {} });
+  await sandbox.runWithFallback({ cwd: tmpdir(), command: "echo 2", env: {} });
+  await sandbox.runWithFallback({ cwd: tmpdir(), command: "echo 3", env: {} });
+  const { readFile } = await import("node:fs/promises");
+  const callsLogged = (await readFile(join(dir, "calls"), "utf8")).trim().split("\n").length;
+  assert.equal(callsLogged, 1, "bwrap must be probed once per Sandbox instance");
+});
+
+test("Sandbox: secrets from the host env are cleared inside the sandbox", () => {
+  const sandbox = new Sandbox({ mode: "auto" });
+  const plan = sandbox.plan({ cwd: tmpdir(), command: "echo $OPENAI_API_KEY", env: { OPENAI_API_KEY: "sk-secret" } });
+  if (plan.kind !== "bwrap") return;
+  assert.ok(plan.argv.includes("--clearenv"), "must not inherit the host environment");
+  assert.ok(!plan.argv.join(" ").includes("sk-secret"), "no host secret may appear in argv");
+  assert.ok(plan.argv.includes(SAFE_PATH_ARG), "PATH is fixed inside the sandbox");
+});
+
+const SAFE_PATH_ARG = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+
+test("Sandbox: writable paths overlapping system dirs are ignored", () => {
+  const sandbox = new Sandbox({ mode: "auto", writablePaths: ["/usr", "/usr/local/x"] });
+  const plan = sandbox.plan({ cwd: tmpdir(), command: "true", env: {} });
+  if (plan.kind !== "bwrap") return;
+  const binds = plan.argv.filter((v) => v === "--bind-try").length;
+  assert.equal(binds, 0, "a path inside a read-only system dir must never be bound writable");
+});

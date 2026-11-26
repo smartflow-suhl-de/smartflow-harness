@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AuditLog, hashArgs } from "../src/safety/audit.ts";
+import { AuditLog, hashArgs, redactCommand } from "../src/safety/audit.ts";
 
 async function tempLog(maxBytes?: number): Promise<{ log: AuditLog; path: string; dir: string }> {
   const dir = await mkdtemp(join(tmpdir(), "harness-audit-"));
@@ -72,4 +72,28 @@ test("AuditLog: a broken path reports an error instead of throwing", async () =>
   const log = new AuditLog({ path: join(blocker, "audit.jsonl"), onError: (e) => errors.push(e) });
   await log.record({ ts: "2026-01-01T00:00:00.000Z", event: "tool_call", tool: "bash" });
   assert.equal(errors.length, 1);
+});
+test("redactCommand: removes tokens but keeps the command recognizable", () => {
+  const cases = [
+    ["curl -H 'Authorization: Bearer abc123def456ghi' https://x", "abc123def456ghi"],
+    ["export OPENAI_API_KEY=sk-live-1234567890abcdef", "sk-live-1234567890abcdef"],
+    ["deploy --api-key supersecretvalue", "supersecretvalue"],
+    ["git commit -m 'fix'", null],
+  ] as const;
+  for (const [command, secret] of cases) {
+    const out = redactCommand(command);
+    if (secret) assert.ok(!out.includes(secret), `leaked ${secret} in: ${out}`);
+    assert.ok(out.length > 0);
+  }
+  assert.match(redactCommand("git commit -m 'fix'"), /git commit/);
+});
+
+test("AuditLog: flush waits for queued lines", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "harness-audit-flush-"));
+  const log = new AuditLog({ path: join(dir, "audit.jsonl") });
+  await log.record({ ts: "t1", event: "tool_call", tool: "bash" });
+  await log.record({ ts: "t2", event: "tool_call", tool: "read" });
+  await log.flush();
+  const lines = (await readFile(join(dir, "audit.jsonl"), "utf8")).trim().split("\n");
+  assert.equal(lines.length, 2);
 });

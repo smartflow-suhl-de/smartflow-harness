@@ -2,7 +2,7 @@ import type { Provider } from "../provider/provider.ts";
 import { looksLikeToolCallText } from "../provider/tool-call-text.ts";
 import { maybeCompact } from "../context/compact.ts";
 import type { PermissionEngine } from "../safety/permissions.ts";
-import { hashArgs, type AuditLog } from "../safety/audit.ts";
+import { hashArgs, redactCommand, type AuditLog } from "../safety/audit.ts";
 import type { ToolRegistry } from "../tools/registry.ts";
 import { Session } from "./session.ts";
 import type { AgentEvent, EventSink, Message, ToolCall, ToolSpec, Usage } from "./types.ts";
@@ -291,10 +291,10 @@ async function executeCall(
   }
 }
 
-/** Shell commands are recorded truncated: enough to recognize, not to leak. */
+/** Shell commands are recorded redacted and truncated: enough to recognize, not to leak. */
 function previewCommand(command: string | undefined): string | undefined {
   if (!command) return undefined;
-  return command.length > 200 ? `${command.slice(0, 200)}…` : command;
+  return redactCommand(command);
 }
 
 export type { AgentEvent };
