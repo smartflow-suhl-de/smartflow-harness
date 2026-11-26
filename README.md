@@ -3,6 +3,7 @@
 Ein eigener Coding-Agent-Harness. Klein, lesbar, ohne Framework.
 
 ```bash
+npm start -- init            # Projekt einrichten: harness.json + AGENTS.md
 npm start                    # startet immer — auch ohne Key
 # oder nach dem Build:
 npm run build && node dist/cli.js
@@ -64,6 +65,32 @@ mit Quellen. Kurzfassung:
   Co. Rohe SDK-Calls, damit Prompts debuggbar bleiben.
 - **Permissions als Daten.** Regeln in `harness.json`, last-match-wins, plus
   Hardline-Patterns, die auch `--yolo` nicht umgeht.
+
+## Projekt einrichten
+
+`harness init` macht ein Repo bereit — in einem Durchlauf, ohne den Harness
+vorher zu konfigurieren:
+
+1. Provider wählen (bestehendes Profil, Preset oder eigener Endpoint inkl. Key-Test)
+2. Modell aus der Liste des Endpoints (nummeriert, nicht getippt)
+3. Permission-Modus (`default`, `plan`, `yolo`)
+4. schreibt `harness.json` im Projekt, `AGENTS.md` und `.harness/` in `.gitignore`
+
+```bash
+harness init
+harness init --provider ollama
+```
+
+Details:
+
+- **`AGENTS.md`** wird aus dem erkannten Stack gefüllt: `package.json`-Skripte
+  mit erkanntem Package-Manager (`pnpm`/`npm`), sonst `pytest`, `cargo`, `go test`.
+  Eine vorhandene Datei wird **nie** überschrieben.
+- **`harness.json`** wird gemergt, nicht ersetzt — bestehende Regeln und
+  Einstellungen bleiben. Der Key geht in den Credentials-Store, nicht in die Datei.
+- **`.gitignore`** bekommt `.harness/`, ohne Duplikat; fehlt die Datei, wird sie
+  angelegt.
+- Abbruch (Ctrl+C) schreibt nichts.
 
 ## Provider
 

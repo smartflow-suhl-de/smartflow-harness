@@ -1,5 +1,10 @@
 import { loadCredentials, saveCredential } from "../config/credentials.ts";
-import { saveUserConfig, type Config, type ProviderEntry } from "../config/config.ts";
+import {
+  saveProjectConfig,
+  saveUserConfig,
+  type ConfigFile,
+  type ProviderEntry,
+} from "../config/config.ts";
 import { BUILTIN_PROVIDERS, isLocalUrl, listProviders } from "../config/providers.ts";
 import { probeProvider } from "../provider/probe.ts";
 
@@ -13,6 +18,12 @@ export interface ConnectIO {
 
 export type ConnectResult = boolean;
 
+/** The parts of the resolved config the wizard actually uses. */
+export interface ConnectConfig {
+  file: ConfigFile;
+  provider: { name: string; contextWindow: number };
+}
+
 /**
  * `/connect` — the one command for provider setup.
  *
@@ -23,13 +34,15 @@ export type ConnectResult = boolean;
  * Safe to re-run: that is the recovery path after a failed start.
  */
 export async function connect(opts: {
-  config: Config;
+  config: ConnectConfig;
   cwd: string;
   io: ConnectIO;
   args: string[];
   env?: NodeJS.ProcessEnv;
   /** Called with the model ids discovered from the endpoint. */
   onModels?: (models: string[]) => void;
+  /** Where to persist: the project file (`init`) or the user file (`/connect`). */
+  target?: "auto" | "project";
 }): Promise<ConnectResult> {
   const env = opts.env ?? process.env;
   const { io, config } = opts;
@@ -114,7 +127,11 @@ export async function connect(opts: {
     ...(existing.headers ? { headers: existing.headers } : {}),
   };
 
-  const path = await saveUserConfig({ provider: chosen.name, providers: { [chosen.name]: entry } }, env);
+  const patch = { provider: chosen.name, providers: { [chosen.name]: entry } };
+  const path =
+    opts.target === "project"
+      ? await saveProjectConfig(opts.cwd, patch)
+      : await saveUserConfig(patch, env);
   if (apiKey) await saveCredential(chosen.name, apiKey, env);
 
   io.write(
@@ -159,13 +176,20 @@ async function chooseModel(io: ConnectIO, models: string[], name: string): Promi
   const shown = models.slice(0, 20);
   io.write(`models:\n`);
   shown.forEach((m, i) => io.write(`  ${String(i + 1).padStart(2)}) ${m}${m === preferred ? "  ←" : ""}\n`));
-  const answer = (await io.question(`pick a model [1-${shown.length}, default 1]: `))?.trim();
-  if (answer === undefined) return undefined;
-  if (!answer) return preferred;
 
-  const index = Number(answer) - 1;
-  if (Number.isInteger(index) && index >= 0 && index < shown.length) return shown[index]!;
-  return answer;
+  // Accept a number or an exact id, but never silently accept a value the
+  // endpoint does not list: that is how a pasted URL becomes a "model".
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const answer = (await io.question(`pick a model [1-${shown.length}, default 1]: `))?.trim();
+    if (answer === undefined) return undefined;
+    if (!answer) return preferred;
+
+    const index = Number(answer) - 1;
+    if (Number.isInteger(index) && index >= 0 && index < shown.length) return shown[index]!;
+    if (models.includes(answer)) return answer;
+    io.write(`"${answer}" is not in the list — enter a number or an exact id\n`);
+  }
+  return undefined;
 }
 
 interface Chosen {
@@ -173,7 +197,7 @@ interface Chosen {
   url?: string;
 }
 
-async function chooseProfile(config: Config, args: string[], io: ConnectIO): Promise<Chosen | undefined> {
+async function chooseProfile(config: ConnectConfig, args: string[], io: ConnectIO): Promise<Chosen | undefined> {
   const first = args[0];
 
   if (first && /^https?:\/\//.test(first)) {

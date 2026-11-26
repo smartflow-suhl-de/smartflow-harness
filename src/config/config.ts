@@ -122,6 +122,11 @@ export async function saveUserConfig(
   return mergeIntoConfig(join(dir, "harness.json"), patch);
 }
 
+/** Merge a patch into the project file at `<cwd>/harness.json`. */
+export async function saveProjectConfig(cwd: string, patch: ConfigFile): Promise<string> {
+  return mergeIntoConfig(join(cwd, "harness.json"), patch);
+}
+
 /**
  * Persist a model choice where it actually takes effect.
  *

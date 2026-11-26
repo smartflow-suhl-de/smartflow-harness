@@ -34,6 +34,7 @@ import { loadHistory, pushHistory, saveHistory } from "./ui/history.ts";
 import type { Ui } from "./ui/ui.ts";
 import type { Status } from "./ui/store.ts";
 import { resolve } from "node:path";
+import { runInit } from "./init.ts";
 
 const VERSION = "0.1.0";
 const color = useColor();
@@ -56,6 +57,7 @@ interface Args {
   help: boolean;
   listProviders: boolean;
   showConfig: boolean;
+  init: boolean;
 }
 
 async function main(): Promise<void> {
@@ -63,6 +65,34 @@ async function main(): Promise<void> {
   if (args.help) return printHelp();
 
   const cwd = resolve(args.cwd);
+
+  if (args.init) {
+    if (!stdin.isTTY || !stdout.isTTY) {
+      console.error(
+        `${c.red("init needs a terminal.")} Run ${c.bold("harness")} and use ${c.bold("/connect")}, ` +
+          `or write harness.json by hand.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const { file } = await readConfigFiles(cwd);
+    const ink = createInkUi({
+      provider: args.provider ?? file.provider ?? "openai",
+      model: "",
+      mode: "default",
+      connected: false,
+      inputTokens: 0,
+      outputTokens: 0,
+    });
+    const done = await runInit({
+      cwd,
+      ui: ink.ui,
+      ...(args.provider ? { provider: args.provider } : {}),
+    });
+    await ink.unmount();
+    if (!done) process.exitCode = 1;
+    return;
+  }
 
   if (args.listProviders) {
     const { file, sources } = await readConfigFiles(cwd);
@@ -598,7 +628,9 @@ function printHelp(): void {
   stdout.write(`harness ${VERSION} — a minimal coding agent
 
 Usage
-  harness [prompt] [options]
+  harness                        interactive session
+  harness init [--provider name]  write harness.json and AGENTS.md here
+  harness "prompt" [options]      one task, then exit
 
 Options
   --provider <name>            provider profile (see --list-providers)
@@ -647,10 +679,12 @@ function parseArgs(argv: string[]): Args {
     help: false,
     listProviders: false,
     showConfig: false,
+    init: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
-    if (arg === "-h" || arg === "--help") args.help = true;
+    if (arg === "init" && i === 0) args.init = true;
+    else if (arg === "-h" || arg === "--help") args.help = true;
     else if (arg === "--provider" || arg === "-p") args.provider = argv[++i];
     else if (arg === "--list-providers") args.listProviders = true;
     else if (arg === "--config") args.showConfig = true;
