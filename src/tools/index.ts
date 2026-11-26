@@ -8,6 +8,7 @@ import { writeTool } from "./write.ts";
 import { diffTool, getGitDiff, createUnifiedDiff } from "./diff.ts";
 import { diagnosticsTool } from "./diagnostics.ts";
 import { searchTools, createToolSearchTool, DEFERRED_THRESHOLD } from "./search.ts";
+import { createSubagentTool } from "../subagents/tool.ts";
 
 /**
  * The default tool core plus search, diff, diagnostics and deferred loading helpers.
@@ -38,4 +39,5 @@ export {
   searchTools,
   createToolSearchTool,
   DEFERRED_THRESHOLD,
+  createSubagentTool,
 };

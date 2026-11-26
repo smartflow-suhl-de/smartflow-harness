@@ -180,6 +180,18 @@ async function main(): Promise<void> {
   const { discoverSkills, renderSkill } = await import("./skills/loader.ts");
   const skills = await discoverSkills(cwd);
 
+  const { discoverSubagents } = await import("./subagents/loader.ts");
+  const { createSubagentTool } = await import("./subagents/tool.ts");
+  const subagents = await discoverSubagents(cwd);
+  tools.register(
+    createSubagentTool({
+      getSubagents: () => subagents,
+      provider: getProvider(),
+      baseTools: tools,
+      cwd,
+    }),
+  );
+
   const completer = createCompleter({
     providers: () => listProviders(config.file).map((p) => p.name),
     models: () => modelSuggestions,
@@ -524,6 +536,11 @@ async function main(): Promise<void> {
             const left = `/${s.name}${s.args ? ` ${s.args}` : ""}`;
             ui.addItem("notice", `  ${left.padEnd(28)} ${s.description} (${s.origin})`);
           }
+        }
+      } else if (command === "agents") {
+        ui.addItem("info", "subagents");
+        for (const a of subagents) {
+          ui.addItem("notice", `  ${a.name.padEnd(14)} (${a.mode ?? "plan"}) ${a.description} [${a.origin}]`);
         }
       } else if (skills.some((s) => s.name === command)) {
         const skill = skills.find((s) => s.name === command)!;
