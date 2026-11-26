@@ -17,7 +17,6 @@ import { OpenAiCompatibleProvider } from "./provider/openai.ts";
 import { explainProviderError } from "./provider/errors.ts";
 import { fetchModels } from "./provider/probe.ts";
 import {
-  looksLikeToolCallText,
   ollamaCapabilities,
   ollamaCapabilitiesMany,
   ollamaRoot,
@@ -29,7 +28,7 @@ import { PermissionEngine } from "./safety/permissions.ts";
 import { createToolRegistry } from "./tools/index.ts";
 import { stdin, stdout } from "node:process";
 import { createCompleter, createListCompleter, COMMANDS, KEY_HELP } from "./ui/commands.ts";
-import { createInkUi } from "./ui/ink-ui.tsx";
+import { clearScreen, createInkUi } from "./ui/ink-ui.tsx";
 import { createPlainUi } from "./ui/plain-ui.ts";
 import { loadHistory, pushHistory, saveHistory } from "./ui/history.ts";
 import type { Ui } from "./ui/ui.ts";
@@ -219,13 +218,6 @@ async function main(): Promise<void> {
     switch (event.type) {
       case "text":
         if (event.text.trim()) ui.addItem("assistant", event.text.trim());
-        if (looksLikeToolCallText(event.text)) {
-          ui.addItem(
-            "notice",
-            `this model wrote the tool call as text instead of calling it. ` +
-              `Use /model to pick one that calls tools: ${recommended()}`,
-          );
-        }
         break;
       case "tool_start": {
         const detail =
@@ -250,6 +242,9 @@ async function main(): Promise<void> {
         outputTokens += event.usage.outputTokens;
         ui.updateStatus({ inputTokens, outputTokens });
         break;
+      case "notice":
+        ui.addItem("notice", event.message);
+        break;
       case "error": {
         const friendly = explainProviderError(event.cause ?? event.message);
         ui.addItem("error", friendly.message);
@@ -270,10 +265,10 @@ async function main(): Promise<void> {
     }
   };
 
-  const runTurn = async (input: string): Promise<void> => {
+  const runTurn = async (input: string): Promise<"stop" | "max_steps" | "stuck" | "aborted" | "error"> => {
     if (!isConnected()) {
       ui.addItem("notice", "not connected — run /connect to set up a provider");
-      return;
+      return "stop";
     }
     ui.addItem("user", input);
     await session.append({ role: "user", content: input });
@@ -294,7 +289,9 @@ async function main(): Promise<void> {
         maxSteps: config.maxSteps,
       });
       if (result.reason === "aborted") ui.addItem("notice", "interrupted");
-      if (result.reason === "error") process.exitCode = 1;
+      // A failed turn must not change the process exit code: Ctrl+C later
+      // would then look like a crash to wrappers such as `npm run dev`.
+      return result.reason;
     } finally {
       abortController = undefined;
       ui.setBusy(false);
@@ -326,7 +323,8 @@ async function main(): Promise<void> {
       await ui.dispose();
       return;
     }
-    await runTurn(args.prompt);
+    const reason = await runTurn(args.prompt);
+    if (reason === "error") process.exitCode = 1;
     await ui.dispose();
     return;
   }
@@ -439,6 +437,7 @@ async function main(): Promise<void> {
         }
         await setModel(chosen);
       } else if (command === "clear") {
+        clearScreen();
         ui.clear();
         banner();
   if (isConnected()) void warnIfNoTools(active.model);
@@ -528,6 +527,9 @@ function buildProvider(
     contextWindow: resolved.contextWindow,
     headers: resolved.headers,
     ...(onNotice ? { onNotice } : {}),
+    // These models advertise tools but only write them as text; skipping the
+    // first bad answer is better than showing a JSON blob to the user.
+    ...(TOOLS_IN_NAME_ONLY.includes(resolved.model) ? { disableTools: true } : {}),
   });
 }
 

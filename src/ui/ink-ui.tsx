@@ -11,9 +11,16 @@ export interface InkUi {
   unmount(): Promise<void>;
 }
 
+/** Wipe the terminal so only the app is visible, not the shell history. */
+export function clearScreen(): void {
+  if (!process.stdout.isTTY) return;
+  process.stdout.write("\u001b[2J\u001b[3J\u001b[H");
+}
+
 /** Start the Ink app and expose it through the plain `Ui` interface. */
 export function createInkUi(status: Status): InkUi {
   const store = new UiStore(status);
+  clearScreen();
   const instance = render(<App store={store} />, { exitOnCtrlC: false });
 
   const ui: Ui = {

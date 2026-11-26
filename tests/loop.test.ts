@@ -16,6 +16,7 @@ class FakeProvider implements Provider {
   readonly name = "fake";
   readonly model = "fake-1";
   contextWindow = 128_000;
+  toolsDisabled = false;
   readonly calls: CompleteRequest[] = [];
   private readonly script: ProviderTurn[];
 
@@ -26,6 +27,10 @@ class FakeProvider implements Provider {
   async complete(req: CompleteRequest): Promise<ProviderTurn> {
     this.calls.push(req);
     return this.script.shift() ?? { text: "done", toolCalls: [], stopReason: "stop" };
+  }
+
+  disableTools(): void {
+    this.toolsDisabled = true;
   }
 }
 
@@ -177,6 +182,76 @@ test("compaction keeps recent messages and stores a summary", async () => {
     assert.ok(summary, "expected a compaction summary message");
     assert.match(summary!.content, /GOAL: test/);
     assert.ok(session.messages.length < 40);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a tool call written as text turns into a chat-only retry", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "harness-textcall-"));
+  try {
+    const session = await Session.create({ cwd: dir });
+    await session.append({ role: "user", content: "hallo" });
+
+    const provider = new FakeProvider([
+      {
+        text: '{"name": "read", "arguments": {"path": "AGENTS.md"}}',
+        toolCalls: [],
+        stopReason: "stop",
+      },
+      { text: "Hallo! Wie geht es dir?", toolCalls: [], stopReason: "stop" },
+    ]);
+
+    const events: AgentEvent[] = [];
+    const result = await runAgent({
+      session,
+      provider,
+      tools: createToolRegistry(),
+      permissions: new PermissionEngine({ mode: "default", cwd: dir }),
+      systemPrompt: "test",
+      cwd: dir,
+      signal: new AbortController().signal,
+      onEvent: (event) => events.push(event),
+      compact: false,
+      maxSteps: 3,
+    });
+
+    assert.equal(result.reason, "stop");
+    assert.equal(provider.toolsDisabled, true, "tools are dropped for later turns");
+    assert.equal(provider.calls.length, 2, "the turn is retried");
+    assert.ok(events.some((event) => event.type === "notice"));
+    assert.deepEqual(session.messages.at(-1), {
+      role: "assistant",
+      content: "Hallo! Wie geht es dir?",
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("plain text answers are not mistaken for tool calls", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "harness-plain-"));
+  try {
+    const session = await Session.create({ cwd: dir });
+    await session.append({ role: "user", content: "hallo" });
+    const provider = new FakeProvider([
+      { text: "Hallo! Ich helfe gern.", toolCalls: [], stopReason: "stop" },
+    ]);
+
+    await runAgent({
+      session,
+      provider,
+      tools: createToolRegistry(),
+      permissions: new PermissionEngine({ mode: "default", cwd: dir }),
+      systemPrompt: "test",
+      cwd: dir,
+      signal: new AbortController().signal,
+      compact: false,
+      maxSteps: 3,
+    });
+
+    assert.equal(provider.calls.length, 1);
+    assert.equal(provider.toolsDisabled, false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

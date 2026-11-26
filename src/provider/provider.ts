@@ -15,4 +15,9 @@ export interface Provider {
   readonly contextWindow: number;
   readonly model: string;
   complete(req: CompleteRequest): Promise<ProviderTurn>;
+  /**
+   * Optional: stop sending tool definitions. Implemented by providers that can
+   * fall back to chat-only mode for models without working tool calls.
+   */
+  disableTools?(): void;
 }

@@ -16,6 +16,8 @@ export interface OpenAiCompatibleOptions {
   maxRetries?: number;
   /** Called once when the model turns out to reject tool definitions. */
   onNotice?: (message: string) => void;
+  /** Start without tools, e.g. for a model known to write calls as text. */
+  disableTools?: boolean;
 }
 
 type WireMessage =
@@ -76,6 +78,16 @@ export class OpenAiCompatibleProvider implements Provider {
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 180_000;
     this.maxRetries = opts.maxRetries ?? 2;
     this.onNotice = opts.onNotice;
+    this.toolsDisabled = opts.disableTools === true;
+  }
+
+  /**
+   * Stop sending tool definitions. The loop calls this when a model answers
+   * with a tool call written as text: the request is retried without tools
+   * and later turns skip them immediately.
+   */
+  disableTools(): void {
+    this.toolsDisabled = true;
   }
 
   async complete(req: CompleteRequest): Promise<ProviderTurn> {

@@ -1,9 +1,10 @@
 import type { Provider } from "../provider/provider.ts";
+import { looksLikeToolCallText } from "../provider/tool-call-text.ts";
 import { maybeCompact } from "../context/compact.ts";
 import type { PermissionEngine } from "../safety/permissions.ts";
 import type { ToolRegistry } from "../tools/registry.ts";
 import { Session } from "./session.ts";
-import type { AgentEvent, EventSink, Message, ToolCall, Usage } from "./types.ts";
+import type { AgentEvent, EventSink, Message, ToolCall, ToolSpec, Usage } from "./types.ts";
 
 export interface AskPermission {
   (req: { tool: string; args: Record<string, unknown>; reason: string }): Promise<boolean>;
@@ -71,26 +72,55 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
       }
     }
 
-    let turn;
-    try {
-      turn = await opts.provider.complete({
+    const toolsForTurn = (): ToolSpec[] =>
+      opts.permissions.mode === "plan"
+        ? opts.tools.specs().filter((s) => s.readOnly)
+        : opts.tools.specs();
+
+    const askModel = () =>
+      opts.provider.complete({
         messages: buildPrompt(opts.session.messages, opts.systemPrompt),
-        tools: opts.permissions.mode === "plan"
-          ? opts.tools.specs().filter((s) => s.readOnly)
-          : opts.tools.specs(),
+        tools: toolsForTurn(),
         signal: opts.signal,
       });
+
+    const account = (turn: Awaited<ReturnType<typeof askModel>>): void => {
+      if (!turn.usage) return;
+      usage.inputTokens += turn.usage.inputTokens;
+      usage.outputTokens += turn.usage.outputTokens;
+      emit({ type: "usage", usage: turn.usage });
+    };
+
+    let turn;
+    try {
+      turn = await askModel();
     } catch (err) {
       if (opts.signal.aborted) return { reason: "aborted", usage };
       emit({ type: "error", message: (err as Error).message, cause: err });
       return { reason: "error", usage };
     }
+    account(turn);
 
-    if (turn.usage) {
-      usage.inputTokens += turn.usage.inputTokens;
-      usage.outputTokens += turn.usage.outputTokens;
-      emit({ type: "usage", usage: turn.usage });
+    // A model that writes the tool call as text cannot act. Rather than return
+    // the JSON blob as an answer, drop tools and ask again for plain text.
+    if (turn.toolCalls.length === 0 && looksLikeToolCallText(turn.text) && opts.provider.disableTools) {
+      opts.provider.disableTools();
+      emit({
+        type: "notice",
+        message:
+          `"${opts.provider.model}" wrote a tool call as text — continuing without tools. ` +
+          `Use /model to pick one that calls tools.`,
+      });
+      try {
+        turn = await askModel();
+        account(turn);
+      } catch (err) {
+        if (opts.signal.aborted) return { reason: "aborted", usage };
+        emit({ type: "error", message: (err as Error).message, cause: err });
+        return { reason: "error", usage };
+      }
     }
+
     if (turn.text) emit({ type: "text", text: turn.text });
 
     await opts.session.append({

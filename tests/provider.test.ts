@@ -128,3 +128,43 @@ test("a 404 model error carries status, body and model", async () => {
     await s.close();
   }
 });
+test("disableTools omits tools from the first request", async () => {
+  const s = await api(() => ({
+    status: 200,
+    body: JSON.stringify({
+      choices: [{ message: { role: "assistant", content: "hallo" }, finish_reason: "stop" }],
+    }),
+  }));
+  try {
+    const provider = new OpenAiCompatibleProvider({ model: "m", baseUrl: s.url, disableTools: true });
+    await provider.complete({
+      messages: [{ role: "user", content: "hi" }],
+      tools: [tool],
+      signal: new AbortController().signal,
+    });
+    assert.equal(s.requests.length, 1);
+    assert.equal(s.requests[0]!.tools, undefined);
+    assert.equal(s.requests[0]!.tool_choice, undefined);
+  } finally {
+    await s.close();
+  }
+});
+
+test("disableTools() also applies to the next request", async () => {
+  const s = await api(() => ({
+    status: 200,
+    body: JSON.stringify({
+      choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+    }),
+  }));
+  try {
+    const provider = new OpenAiCompatibleProvider({ model: "m", baseUrl: s.url });
+    await provider.complete({ messages: [{ role: "user", content: "a" }], tools: [tool], signal: new AbortController().signal });
+    assert.ok(Array.isArray(s.requests[0]!.tools));
+    provider.disableTools();
+    await provider.complete({ messages: [{ role: "user", content: "b" }], tools: [tool], signal: new AbortController().signal });
+    assert.equal(s.requests[1]!.tools, undefined);
+  } finally {
+    await s.close();
+  }
+});

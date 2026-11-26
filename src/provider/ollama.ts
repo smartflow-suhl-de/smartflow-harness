@@ -91,20 +91,4 @@ export const RECOMMENDED_MODELS: Array<{ model: string; size: string; note: stri
  */
 export const TOOLS_IN_NAME_ONLY = ["qwen2.5-coder:0.5b", "qwen2.5-coder:1.5b"];
 
-/**
- * Some models "call" tools by writing the call as assistant text instead of
- * using the tool channel. Recognising that shape turns a silent no-op into a
- * message the user can act on.
- */
-export function looksLikeToolCallText(text: string): boolean {
-  const trimmed = text.trim();
-  if (!trimmed.includes('"arguments"')) return false;
-  const withoutFence = trimmed.replace(/^```[a-z]*\s*/i, "").replace(/```$/, "").trim();
-  if (!withoutFence.startsWith("{")) return false;
-  try {
-    const parsed = JSON.parse(withoutFence) as { name?: unknown; arguments?: unknown };
-    return typeof parsed.name === "string" && typeof parsed.arguments === "object";
-  } catch {
-    return false;
-  }
-}
+export { looksLikeToolCallText } from "./tool-call-text.ts";
