@@ -82,7 +82,7 @@ export function createSubagentTool(opts: SubagentToolOptions): Tool {
           permissions: childPermissions,
           systemPrompt: def.systemPrompt,
           cwd: opts.cwd,
-          signal: ctx.signal,
+          signal: ctx?.signal ?? new AbortController().signal,
           maxSteps: def.maxSteps ?? 20,
         });
 
