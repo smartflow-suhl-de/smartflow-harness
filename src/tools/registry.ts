@@ -1,4 +1,5 @@
 import type { JsonSchema, Tool, ToolResult, ToolSpec } from "../core/types.ts";
+import { createToolSearchTool } from "./search.ts";
 
 export interface ToolDefinition {
   name: string;
@@ -22,29 +23,99 @@ export function defineTool(def: ToolDefinition): Tool {
 
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
+  private readonly active = new Set<string>();
+  private readonly deferred = new Set<string>();
+  private searchTool?: Tool;
 
-  constructor(tools: Tool[] = []) {
+  constructor(tools: Tool[] = [], opts?: { autoDeferThreshold?: number }) {
     for (const tool of tools) this.register(tool);
+    if (opts?.autoDeferThreshold && this.tools.size > opts.autoDeferThreshold) {
+      this.applyAutoDefer(opts.autoDeferThreshold);
+    }
   }
 
-  register(tool: Tool): this {
+  register(tool: Tool, opts?: { deferred?: boolean }): this {
     this.tools.set(tool.spec.name, tool);
+    if (opts?.deferred) {
+      this.deferred.add(tool.spec.name);
+      this.active.delete(tool.spec.name);
+    } else {
+      this.active.add(tool.spec.name);
+      this.deferred.delete(tool.spec.name);
+    }
     return this;
   }
 
+  activate(name: string): boolean {
+    if (!this.tools.has(name)) return false;
+    this.deferred.delete(name);
+    this.active.add(name);
+    return true;
+  }
+
+  isDeferred(name: string): boolean {
+    return this.deferred.has(name);
+  }
+
+  getDeferredTools(): Tool[] {
+    return [...this.deferred].map((name) => this.tools.get(name)!).filter(Boolean);
+  }
+
+  getActiveTools(): Tool[] {
+    return [...this.active].map((name) => this.tools.get(name)!).filter(Boolean);
+  }
+
+  applyAutoDefer(threshold = 15): void {
+    const coreNames = new Set(["bash", "read", "write", "edit", "diff", "diagnostics"]);
+    let count = 0;
+    for (const [name] of this.tools) {
+      if (coreNames.has(name)) {
+        this.active.add(name);
+        this.deferred.delete(name);
+        count++;
+      } else if (count < threshold) {
+        this.active.add(name);
+        this.deferred.delete(name);
+        count++;
+      } else {
+        this.deferred.add(name);
+        this.active.delete(name);
+      }
+    }
+  }
+
   get(name: string): Tool | undefined {
+    if (name === "tool_search" && this.deferred.size > 0) {
+      return (this.searchTool ??= createToolSearchTool(this));
+    }
     return this.tools.get(name);
   }
 
   specs(): ToolSpec[] {
-    return [...this.tools.values()].map((t) => t.spec);
+    const list: ToolSpec[] = [];
+    for (const name of this.active) {
+      const tool = this.tools.get(name);
+      if (tool) list.push(tool.spec);
+    }
+
+    if (this.deferred.size > 0) {
+      this.searchTool ??= createToolSearchTool(this);
+      list.push(this.searchTool.spec);
+    }
+
+    return list;
   }
 
   names(): string[] {
+    const names = [...this.active];
+    if (this.deferred.size > 0) names.push("tool_search");
+    return names;
+  }
+
+  allNames(): string[] {
     return [...this.tools.keys()];
   }
 
-  /** Names shown in prompts; useful when tools are filtered by mode. */
   describe(): string {
     return this.specs()
       .map((s) => `- ${s.name} (${s.readOnly ? "read-only" : "mutating"}): ${s.description}`)
