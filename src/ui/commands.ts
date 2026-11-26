@@ -12,6 +12,7 @@ export const COMMANDS: SlashCommand[] = [
   { name: "connect", args: "[name|url]", description: "set up a provider: key, endpoint, test, save" },
   { name: "model", args: "[id]", description: "show or change the model" },
   { name: "mode", args: "[plan|default|yolo]", description: "switch permission mode" },
+  { name: "diff", args: "[path]", description: "show unstaged git changes in the workspace" },
   { name: "session", description: "show session id and transcript path" },
   { name: "compact", description: "force context compaction now" },
   { name: "clear", description: "clear the screen" },

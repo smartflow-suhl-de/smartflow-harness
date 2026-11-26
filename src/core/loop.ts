@@ -22,6 +22,8 @@ export interface RunOptions {
   ask?: AskPermission;
   maxSteps?: number;
   compact?: boolean;
+  /** Whether to run post-edit diagnostics on code files (default false). */
+  diagnostics?: boolean;
 }
 
 export interface RunResult {
@@ -216,6 +218,26 @@ async function executeCall(
         return opts.ask ? opts.ask({ tool: req.tool, args: req.args, reason: d.reason }) : false;
       },
     });
+
+    if (result.ok && opts.diagnostics && (call.name === "edit" || call.name === "write")) {
+      const filePath = typeof call.args.path === "string" ? String(call.args.path) : undefined;
+      if (filePath && /\.[jt]sx?$/.test(filePath)) {
+        try {
+          const { runDiagnostics, formatDiagnostics } = await import("../diagnostics/runner.ts");
+          const diagResult = await runDiagnostics({
+            cwd: opts.cwd,
+            file: filePath,
+            signal: controller.signal,
+          });
+          if (diagResult.diagnostics.length > 0) {
+            result.output += `\n\n[Diagnostics after edit]:\n${formatDiagnostics(diagResult.diagnostics)}`;
+          }
+        } catch {
+          // Diagnostics check is best-effort and non-fatal
+        }
+      }
+    }
+
     emit({ type: "tool_end", name: call.name, id: call.id, ok: result.ok, summary: result.summary });
     return result.output;
   } catch (err) {

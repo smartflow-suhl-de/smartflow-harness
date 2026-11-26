@@ -473,7 +473,22 @@ async function main(): Promise<void> {
         clearScreen();
         ui.clear();
         banner();
-  if (isConnected()) void warnIfNoTools(active.model);
+        if (isConnected()) void warnIfNoTools(active.model);
+      } else if (command === "diff") {
+        const { getGitDiff } = await import("./tools/diff.ts");
+        ui.setBusy(true);
+        try {
+          const diffOutput = await getGitDiff(cwd, { path: rest[0] });
+          if (!diffOutput.trim()) {
+            ui.addItem("notice", "no unstaged changes in workspace");
+          } else {
+            ui.addItem("notice", diffOutput);
+          }
+        } catch (err) {
+          ui.addItem("error", (err as Error).message);
+        } finally {
+          ui.setBusy(false);
+        }
       } else if (command === "compact") {
         const { maybeCompact } = await import("./context/compact.ts");
         ui.setBusy(true);
