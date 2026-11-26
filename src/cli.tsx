@@ -2,7 +2,12 @@
 import { loadConfig, readConfigFiles } from "./config/config.ts";
 import { loadCredentials } from "./config/credentials.ts";
 import { connect } from "./ui/connect.ts";
-import { ConfigError, isLocalUrl, listProviders, resolveProvider, type ResolvedProvider } from "./config/providers.ts";
+import {
+  ConfigError,
+  isLocalUrl,
+  listProviders,
+  type ResolvedProvider,
+} from "./config/providers.ts";
 import { loadContextFiles } from "./context/files.ts";
 import { runAgent } from "./core/loop.ts";
 import { buildSystemPrompt } from "./core/prompt.ts";
@@ -12,8 +17,12 @@ import { OpenAiCompatibleProvider } from "./provider/openai.ts";
 import { PermissionEngine } from "./safety/permissions.ts";
 import { createToolRegistry } from "./tools/index.ts";
 import { stdin, stdout } from "node:process";
-import { Terminal } from "./ui/terminal.ts";
 import { createCompleter, COMMANDS, KEY_HELP } from "./ui/commands.ts";
+import { createInkUi } from "./ui/ink-ui.tsx";
+import { createPlainUi } from "./ui/plain-ui.ts";
+import { loadHistory, pushHistory, saveHistory } from "./ui/history.ts";
+import type { Ui } from "./ui/ui.ts";
+import type { Status } from "./ui/store.ts";
 import { resolve } from "node:path";
 
 const VERSION = "0.1.0";
@@ -69,108 +78,109 @@ async function main(): Promise<void> {
   if (args.mode) config.mode = args.mode;
   if (args.model) config.provider.model = args.model;
 
-  const modelSuggestions: string[] = [];
-  let active = config.provider;
-  // Built lazily: the REPL must start even with no provider connected.
-  let provider: OpenAiCompatibleProvider | undefined;
-  const getProvider = () => (provider ??= buildProvider(active));
-  const isConnected = () => Boolean(active.apiKey) || isLocalUrl(active.baseUrl);
-
   if (args.showConfig) {
     printConfig(config, cwd);
     return;
   }
 
+  const modelSuggestions: string[] = [];
+  let active = config.provider;
+  let provider: OpenAiCompatibleProvider | undefined;
+  const getProvider = () => (provider ??= buildProvider(active));
+  const isConnected = () => Boolean(active.apiKey) || isLocalUrl(active.baseUrl);
+
   const tools = createToolRegistry();
   const permissions = new PermissionEngine({ mode: config.mode, rules: config.rules, cwd });
   const contextFiles = await loadContextFiles(cwd);
   const systemPrompt = buildSystemPrompt({ cwd, tools, contextFiles, extra: config.systemPrompt });
-
   const session = args.resume ? await Session.load(resolve(args.resume)) : await Session.create({ cwd });
 
-  const terminal = new Terminal({
-    input: stdin,
-    output: stdout,
-    completer: createCompleter({
-      providers: () => listProviders(config.file).map((p) => p.name),
-      models: () => modelSuggestions,
-    }),
+  const completer = createCompleter({
+    providers: () => listProviders(config.file).map((p) => p.name),
+    models: () => modelSuggestions,
   });
 
-  const ask = async (req: { tool: string; args: Record<string, unknown>; reason: string }) => {
+  const interactive = Boolean(stdin.isTTY && stdout.isTTY);
+  const ink = interactive ? createInkUi(statusOf(active, permissions.mode, isConnected())) : undefined;
+  const ui: Ui = ink?.ui ?? createPlainUi();
+
+  const history = await loadHistory();
+
+  let abortController: AbortController | undefined;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  ui.onInterrupt(() => abortController?.abort());
+
+  const permissionPrompt = async (req: {
+    tool: string;
+    args: Record<string, unknown>;
+    reason: string;
+  }): Promise<boolean> => {
     const detail =
       req.tool === "bash"
         ? String(req.args.command ?? "")
         : JSON.stringify(req.args).slice(0, 200);
-    const answer = await terminal.ask(
-      `\n${c.yellow("allow?")} ${c.bold(req.tool)} ${c.dim(detail)} ${c.dim(`(${req.reason})`)} [y/N/a=always] `,
+    const answer = await ui.ask(
+      `allow ${req.tool}? ${detail} (${req.reason}) [y/N/a=always] `,
+      { tone: "question" },
     );
-    if (answer === undefined) return false;
-    const a = answer.trim().toLowerCase();
-    if (a === "a" || a === "always") {
+    if (answer.type === "cancel") return false;
+    const value = answer.value.trim().toLowerCase();
+    if (value === "a" || value === "always") {
       permissions.mode = "yolo";
       return true;
     }
-    return a === "y" || a === "yes";
+    return value === "y" || value === "yes";
   };
 
-  const render = (event: AgentEvent) => {
+  const onEvent = (event: AgentEvent): void => {
     switch (event.type) {
       case "text":
-        stdout.write(event.text.endsWith("\n") ? event.text : `${event.text}\n`);
+        if (event.text.trim()) ui.addItem("assistant", event.text.trim());
         break;
       case "tool_start": {
         const detail =
           event.name === "bash"
             ? String(event.args.command ?? "")
             : String(event.args.path ?? event.args.pattern ?? "");
-        stdout.write(`${c.dim("→")} ${c.cyan(event.name)} ${c.dim(truncate(detail, 120))}\n`);
+        ui.setLive(`${event.name} ${truncate(detail, 120)}`);
         break;
       }
       case "tool_end":
-        if (!event.ok) stdout.write(`  ${c.red("✗")} ${c.dim(event.summary ?? "failed")}\n`);
+        ui.setLive(null);
+        ui.addItem("tool", event.summary ?? "", { label: event.name, ok: event.ok });
         break;
       case "compacted":
-        stdout.write(c.dim(`  [compacted ${event.removedMessages} messages → ${event.summaryTokens} tokens]\n`));
-        break;
-      case "usage":
-        stdout.write(
-          c.dim(`  [tokens in ${event.usage.inputTokens} / out ${event.usage.outputTokens}]\n`),
+        ui.addItem(
+          "notice",
+          `compacted ${event.removedMessages} messages → ${event.summaryTokens} tokens`,
         );
         break;
+      case "usage":
+        inputTokens += event.usage.inputTokens;
+        outputTokens += event.usage.outputTokens;
+        ui.updateStatus({ inputTokens, outputTokens });
+        break;
       case "error":
-        stdout.write(`${c.red("error")} ${event.message}\n`);
+        ui.addItem("error", event.message);
         break;
       case "done":
-        if (event.reason === "max_steps") stdout.write(c.yellow("  [step limit reached]\n"));
-        if (event.reason === "stuck") stdout.write(c.yellow("  [stopped: repeated tool calls]\n"));
+        if (event.reason === "max_steps") ui.addItem("notice", "step limit reached");
+        if (event.reason === "stuck") ui.addItem("notice", "stopped: repeated tool calls");
         break;
     }
   };
 
-  let running = false;
-  let abortController: AbortController | undefined;
-
-  process.on("SIGINT", () => {
-    if (running && abortController) {
-      abortController.abort();
-      stdout.write(`\n${c.dim("[interrupted]")}\n`);
-      return;
-    }
-    stdout.write("\n");
-    process.exit(0);
-  });
-
-  const runTurn = async (input: string) => {
+  const runTurn = async (input: string): Promise<void> => {
     if (!isConnected()) {
-      stdout.write(
-        `${c.yellow("not connected")} — run ${c.bold("/connect")} to set up a provider\n`,
-      );
+      ui.addItem("notice", "not connected — run /connect to set up a provider");
       return;
     }
+    ui.addItem("user", input);
     await session.append({ role: "user", content: input });
+
     abortController = new AbortController();
-    running = true;
+    ui.setBusy(true);
     try {
       const result = await runAgent({
         session,
@@ -180,105 +190,164 @@ async function main(): Promise<void> {
         systemPrompt,
         cwd,
         signal: abortController.signal,
-        onEvent: render,
-        ask,
+        onEvent,
+        ask: permissionPrompt,
         maxSteps: config.maxSteps,
       });
+      if (result.reason === "aborted") ui.addItem("notice", "interrupted");
       if (result.reason === "error") process.exitCode = 1;
     } finally {
-      running = false;
       abortController = undefined;
+      ui.setBusy(false);
+      ui.setLive(null);
+    }
+  };
+
+  const banner = (): void => {
+    ui.addItem(
+      "notice",
+      `harness ${VERSION} · ${active.name} · ${active.model} · ${permissions.mode} · ${
+        isConnected() ? "connected" : "not connected"
+      }`,
+    );
+    if (!isConnected()) {
+      ui.addItem("notice", `no key for "${active.name}" — /connect to set one up · /help for commands`);
+    } else {
+      ui.addItem("notice", `session ${session.meta.id} · /help for commands`);
     }
   };
 
   if (args.prompt) {
     if (!isConnected()) {
-      console.error(
-        `${c.yellow("not connected:")} provider "${active.name}" has no key.\n` +
-          `  Run ${c.bold("harness")} and use ${c.bold("/connect")}, or set ${active.keyHint}.`,
+      ui.addItem(
+        "error",
+        `provider "${active.name}" has no key. Run /connect or set ${active.keyHint}.`,
       );
       process.exitCode = 1;
-      terminal.dispose();
+      await ui.dispose();
       return;
     }
     await runTurn(args.prompt);
-    terminal.dispose();
+    await ui.dispose();
     return;
   }
 
-  printBanner(active, permissions.mode, session, isConnected());
+  banner();
+
   for (;;) {
-    const line = await terminal.readLine(c.green("› "));
-    // undefined: Ctrl+C on an empty line, or Ctrl+D, or EOF. Leave quietly.
-    if (line === undefined) break;
-    const input = line.trim();
+    const result = await ui.ask("› ", {
+      tone: "prompt",
+      history,
+      completer,
+      placeholder: isConnected() ? "message, or /help" : "not connected — /connect",
+    });
+    if (result.type === "cancel") break;
+
+    const input = result.value.trim();
     if (!input) continue;
+
+    if (input !== "/exit" && input !== "/quit") {
+      pushHistory(history, result.value);
+      void saveHistory(history);
+    }
+
     if (input === "/exit" || input === "/quit") break;
 
     if (input.startsWith("/")) {
       const [command, ...rest] = input.slice(1).split(/\s+/);
-      if (command === "help") printCommands();
-      else if (command === "mode") {
+
+      if (command === "help") {
+        printCommands(ui);
+      } else if (command === "mode") {
         const mode = rest[0];
         if (mode === "plan" || mode === "default" || mode === "yolo") {
           permissions.mode = mode;
-          stdout.write(c.dim(`mode: ${mode}\n`));
-        } else stdout.write(c.yellow("usage: /mode plan|default|yolo\n"));
+          ui.updateStatus({ mode });
+          ui.addItem("notice", `mode: ${mode}`);
+        } else {
+          ui.addItem("error", "usage: /mode plan|default|yolo");
+        }
       } else if (command === "connect") {
-        const ok = await connect({
-          config,
-          cwd,
-          io: {
-            question: (q) => terminal.ask(q),
-            write: (t) => stdout.write(t),
-            secret: (q) => terminal.secret(q),
-          },
-          args: rest,
-          onModels: (models) => {
-            modelSuggestions.splice(0, modelSuggestions.length, ...models);
-          },
-        });
-        if (ok) {
-          config = await loadConfig(cwd, {
-            credentials: (await loadCredentials()).providers,
+        ui.setBusy(true);
+        try {
+          const ok = await connect({
+            config,
+            cwd,
+            io: {
+              question: async (question) => {
+                const answer = await ui.ask(question, { tone: "question" });
+                return answer.type === "value" ? answer.value : undefined;
+              },
+              secret: async (question) => {
+                const answer = await ui.ask(question, { tone: "question", mask: true });
+                return answer.type === "value" ? answer.value : undefined;
+              },
+              write: lineWriter(ui),
+            },
+            args: rest,
+            onModels: (models) => {
+              modelSuggestions.splice(0, modelSuggestions.length, ...models);
+            },
           });
-          active = config.provider;
-          provider = undefined;
-          permissions.mode = config.mode;
-          stdout.write(c.dim(`ready: ${active.name} · ${active.model}\n`));
+          if (ok) {
+            config = await loadConfig(cwd, {
+              credentials: (await loadCredentials()).providers,
+            });
+            active = config.provider;
+            provider = undefined;
+            permissions.mode = config.mode;
+            ui.updateStatus({
+              provider: active.name,
+              model: active.model,
+              mode: permissions.mode,
+              connected: isConnected(),
+            });
+            ui.addItem("notice", `ready: ${active.name} · ${active.model}`);
+          }
+        } finally {
+          ui.setBusy(false);
         }
       } else if (command === "session") {
-        stdout.write(c.dim(`${session.meta.id}  ${session.path}\n`));
+        ui.addItem("notice", `${session.meta.id}  ${session.path}`);
       } else if (command === "model") {
         if (!rest[0]) {
-          stdout.write(c.dim(`${active.name} · ${active.model}\n`));
+          ui.addItem("notice", `${active.name} · ${active.model}`);
           if (modelSuggestions.length > 0) {
-            stdout.write(c.dim(`known: ${modelSuggestions.slice(0, 12).join(", ")}\n`));
+            ui.addItem("notice", `known: ${modelSuggestions.slice(0, 12).join(", ")}`);
           }
-          continue;
+        } else {
+          active = { ...active, model: rest[0] };
+          provider = buildProvider(active);
+          ui.updateStatus({ model: active.model });
+          ui.addItem("notice", `model: ${active.model}`);
         }
-        active = { ...active, model: rest[0] };
-        provider = buildProvider(active);
-        stdout.write(c.dim(`model: ${rest[0]}\n`));
       } else if (command === "clear") {
-        stdout.write("\u001b[2J\u001b[3J\u001b[H");
-        printBanner(active, permissions.mode, session, isConnected());
+        ui.clear();
+        banner();
       } else if (command === "compact") {
         const { maybeCompact } = await import("./context/compact.ts");
-        const result = await maybeCompact({
-          messages: session.messages,
-          provider: getProvider(),
-          signal: new AbortController().signal,
-          threshold: 0, // force
-        });
-        if (result.compacted) {
-          session.replaceMessages(result.messages);
-          stdout.write(c.dim(`compacted ${result.removedMessages} messages → ${result.summaryTokens} tokens\n`));
-        } else {
-          stdout.write(c.dim("nothing to compact\n"));
+        ui.setBusy(true);
+        try {
+          const compacted = await maybeCompact({
+            messages: session.messages,
+            provider: getProvider(),
+            signal: new AbortController().signal,
+            threshold: 0,
+          });
+          if (compacted.compacted) {
+            session.replaceMessages(compacted.messages);
+            ui.addItem(
+              "notice",
+              `compacted ${compacted.removedMessages} messages → ${compacted.summaryTokens} tokens`,
+            );
+          } else {
+            ui.addItem("notice", "nothing to compact");
+          }
+        } finally {
+          ui.setBusy(false);
         }
       } else {
-        stdout.write(c.yellow(`unknown command: /${command} (try /help)\n`));
+        ui.addItem("error", `unknown command: /${command} (try /help)`);
       }
       continue;
     }
@@ -286,43 +355,46 @@ async function main(): Promise<void> {
     await runTurn(input);
   }
 
-  terminal.dispose();
-  stdout.write(c.dim(`session: ${session.path}\n`));
+  await ui.dispose();
+  if (!interactive) stdout.write(`session: ${session.path}\n`);
+  else process.stdout.write(c.dim(`session: ${session.path}\n`));
 }
 
-function printBanner(
-  active: ResolvedProvider,
-  mode: string,
-  session: Session,
-  connected: boolean,
-): void {
-  const status = connected ? c.green("connected") : c.yellow("not connected");
-  stdout.write(
-    `${c.bold("harness")} ${c.dim(VERSION)}  ${c.dim("provider")} ${active.name}  ${c.dim("model")} ${active.model}  ${c.dim("mode")} ${mode}  ${status}\n`,
-  );
-  if (!connected) {
-    stdout.write(
-      `${c.dim(`  no key for "${active.name}". run `)}${c.bold("/connect")}${c.dim(" to set one up · /help for commands")}\n`,
-    );
-  } else {
-    stdout.write(c.dim(`  session ${session.meta.id} · /help for commands · ctrl+c to interrupt`) + "\n");
-  }
-  stdout.write("\n");
+function statusOf(active: ResolvedProvider, mode: string, connected: boolean): Status {
+  return {
+    provider: active.name,
+    model: active.model,
+    mode,
+    connected,
+    inputTokens: 0,
+    outputTokens: 0,
+  };
 }
 
+/** Buffer connect()'s partial writes into whole transcript lines. */
+function lineWriter(ui: Ui): (text: string) => void {
+  let buffer = "";
+  return (text: string) => {
+    buffer += text;
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (line.trim()) ui.addItem("notice", line);
+    }
+  };
+}
 
-function printCommands(): void {
-  const width = Math.max(...COMMANDS.map((c) => `/${c.name} ${c.args ?? ""}`.trim().length));
-  stdout.write(`${c.bold("commands")}\n`);
+function printCommands(ui: Ui): void {
+  const width = Math.max(...COMMANDS.map((command) => `/${command.name} ${command.args ?? ""}`.trim().length));
+  ui.addItem("info", "commands");
   for (const command of COMMANDS) {
     const left = `/${command.name}${command.args ? ` ${command.args}` : ""}`;
-    stdout.write(`  ${left.padEnd(width + 2)} ${c.dim(command.description)}\n`);
+    ui.addItem("notice", `  ${left.padEnd(width + 2)} ${command.description}`);
   }
-  stdout.write(`\n${c.bold("keys")}\n`);
+  ui.addItem("info", "keys");
   for (const [keys, description] of KEY_HELP) {
-    stdout.write(`  ${keys.padEnd(26)} ${c.dim(description)}\n`);
+    ui.addItem("notice", `  ${keys.padEnd(26)} ${description}`);
   }
-  stdout.write("\n");
 }
 
 function buildProvider(resolved: ResolvedProvider): OpenAiCompatibleProvider {

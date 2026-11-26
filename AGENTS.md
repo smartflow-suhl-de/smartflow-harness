@@ -17,6 +17,10 @@ Node (type stripping, no build step).
 - Every behaviour change needs a test in `tests/`. Run `npm test` and
   `npm run typecheck` before finishing.
 - No new dependency without recording why in `docs/RESEARCH.md`.
+- UI is React via Ink. `npm start` runs TSX through `tsx`; `npm run build`
+  emits `dist/` for the packaged bin. Never import `.tsx` from a script that
+  Node runs without the loader.
+- Keep the agent loop free of React: it talks to `Ui` (`src/ui/ui.ts`).
 
 ## Layout
 
@@ -26,7 +30,7 @@ Node (type stripping, no build step).
 - `src/context` — context files, compaction
 - `src/safety` — permission engine
 - `src/config` — config loading (env > harness.json > defaults)
-- `src/ui` — REPL: line editor, key decoding, completion, provider setup
+- `src/ui` — Ink app (`.tsx`), store, completion, provider setup
 
 ## Style
 

@@ -4,7 +4,6 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { historyPath, loadHistory, pushHistory, saveHistory } from "../src/ui/history.ts";
-import { LineEditor } from "../src/ui/editor.ts";
 
 async function home() {
   const dir = await mkdtemp(join(tmpdir(), "harness-hist-"));
@@ -66,35 +65,4 @@ test("history is capped", async () => {
   } finally {
     await h.cleanup();
   }
-});
-
-test("masked input renders bullets and never the typed secret", async () => {
-  const written: string[] = [];
-  const editor = new LineEditor({
-    write: (t) => written.push(t),
-    size: () => ({ cols: 80, rows: 24 }),
-  });
-  const promise = editor.readLine({ prompt: "key: ", history: [], mask: true });
-  editor.handle([{ type: "text", value: "sk-super-secret" }]);
-  editor.handle([{ type: "enter" }]);
-  assert.equal(await promise, "sk-super-secret");
-  const output = written.join("");
-  assert.equal(output.includes("sk-super-secret"), false, "the secret must not be echoed");
-  assert.ok(output.includes("•"));
-});
-
-test("completion is disabled while masking", async () => {
-  const written: string[] = [];
-  const editor = new LineEditor({
-    write: (t) => written.push(t),
-    size: () => ({ cols: 80, rows: 24 }),
-  });
-  const promise = editor.readLine({
-    prompt: "key: ",
-    history: [],
-    mask: true,
-    completer: { complete: () => [{ value: "leak" }] },
-  });
-  editor.handle([{ type: "text", value: "/co" }, { type: "tab" }, { type: "enter" }]);
-  assert.equal(await promise, "/co");
 });

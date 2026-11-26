@@ -1,4 +1,4 @@
-import type { Completion, Completer } from "./editor.ts";
+import type { Completion, Completer } from "./completion.ts";
 
 export interface SlashCommand {
   name: string;
@@ -80,8 +80,7 @@ export const KEY_HELP: Array<[string, string]> = [
   ["ctrl+u / ctrl+k", "delete to start / end"],
   ["ctrl+w", "delete the word before the cursor"],
   ["ctrl+y", "yank the last killed text"],
-  ["ctrl+l", "clear the screen"],
   ["ctrl+c", "clear the line; on an empty line: quit"],
   ["ctrl+d", "quit on an empty line"],
-  ["ctrl+j", "new line (multi-line prompt)"],
+  ["ctrl+j / alt+enter", "new line in the prompt"],
 ];

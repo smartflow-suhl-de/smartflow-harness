@@ -3,28 +3,34 @@
 Ein eigener Coding-Agent-Harness. Klein, lesbar, ohne Framework.
 
 ```bash
-node src/cli.ts              # startet immer — auch ohne Key
-/connect                     # Provider einrichten: Key, Test, speichern
+npm start                    # startet immer — auch ohne Key
+# oder nach dem Build:
+npm run build && node dist/cli.js
 ```
+
+Im Prompt: `/connect` richtet den Provider ein (Key, Test, speichern).
 
 Danach läuft es ohne Neustart:
 
 ```bash
-node src/cli.ts "fix the failing test in tests/"
+npm start -- "fix the failing test in tests/"
 ```
 
 ```bash
-node src/cli.ts                  # interaktiv: tab, history, menü
-node src/cli.ts --plan           # read-only (Plan-Modus)
-node src/cli.ts --yolo           # keine Rückfragen (Hardline-Floor bleibt)
-node src/cli.ts --provider local # anderes Profil
-node src/cli.ts --list-providers # verfügbare Provider
-node src/cli.ts --config         # aufgelöste Konfiguration
-npm test                         # 45 Tests, node --test
+npm start                        # interaktiv: Tab-Menü, History
+npm start -- --plan              # read-only (Plan-Modus)
+npm start -- --yolo              # keine Rückfragen (Hardline-Floor bleibt)
+npm start -- --provider local    # anderes Profil
+npm start -- --list-providers    # verfügbare Provider
+npm start -- --config            # aufgelöste Konfiguration
+npm test                         # 79 Tests
 npm run typecheck                # tsc --noEmit
+npm run build                    # dist/ für den harness-Bin
 ```
 
-Kein Build-Step: Node ≥24 führt `.ts` direkt aus (Type Stripping).
+Die UI ist [Ink](https://github.com/vadimdemedes/ink) (React fürs Terminal).
+`npm start` führt die `.tsx` über `tsx` direkt aus; `npm run build` erzeugt
+`dist/` für den installierbaren `harness`-Bin.
 
 ## Was drin ist
 
@@ -38,7 +44,8 @@ Kein Build-Step: Node ≥24 führt `.ts` direkt aus (Type Stripping).
 | Sessions | `src/core/session.ts` | append-only JSONL, resume |
 | Provider-Profile | `src/config/providers.ts` | Presets + eigene Endpoints, Env/Datei/CLI |
 | `/connect` | `src/ui/connect.ts` | Provider einrichten ohne Neustart, Key-Test, Persistenz |
-| Eingabe | `src/ui/` | Raw-Mode-Editor: Completion-Menü, History, Wort-/Zeilen-Tasten |
+| UI | `src/ui/app.tsx`, `prompt-input.tsx` | Ink/React: Completion-Menü, History, Statuszeile |
+| UI-Brücke | `src/ui/store.ts` | externer Store, den der Agent-Loop imperativ füttert |
 | CLI | `src/cli.ts` | REPL + one-shot |
 
 ## Warum so gebaut
@@ -155,7 +162,9 @@ Profile lassen sich auch direkt schreiben — nützlich für Repos und CI:
 
 ## Bedienung
 
-Der Prompt ist ein echter Zeileneditor, kein `readline`-Fallback.
+Die Oberfläche ist eine Ink-App: Transkript im Scrollback (`<Static>`), darunter
+Eingabe, Menü und Statuszeile. Der Agent-Loop bleibt imperativ und schiebt
+Events in einen externen Store — React rendert nur.
 
 | Taste | Wirkung |
 |---|---|
@@ -173,12 +182,16 @@ Der Prompt ist ein echter Zeileneditor, kein `readline`-Fallback.
 | `ctrl+d` | auf leerer Zeile: beenden |
 
 Vervollständigt werden Slash-Befehle, deren Argumente (`/mode`, `/connect`,
-`/model`) und Provider-Namen. Die History liegt in
+`/model`) und Provider-Namen. Das Menü öffnet mit `tab`, `↑`/`↓` bewegen die
+Auswahl, `⏎` übernimmt. Die History liegt in
 `~/.config/harness/history` (bzw. `$HARNESS_HOME/history`) und überlebt
 Neustarts. Eingaben für Keys werden als `•` gerendert und nie gespeichert.
 
 `ctrl+c` beendet sauber mit Exit-Code 0 — kein Stacktrace, auch mitten in
-`/connect`.
+`/connect`. Läuft gerade ein Tool, bricht `ctrl+c` den Lauf ab.
+
+Bei nicht-interaktiver Eingabe (Pipe, CI) fällt die UI auf zeilenbasierte
+Ausgabe zurück, damit `printf '/exit\n' | harness` weiter funktioniert.
 
 ## Konfiguration
 
@@ -221,6 +234,12 @@ src/
     compact.ts           Threshold-Compaction
   safety/
     permissions.ts       Modi, Regeln, Hardline
+  ui/
+    app.tsx              Ink-Wurzel: Static-Transkript, Prompt, Status
+    prompt-input.tsx     Eingabezeile, Cursor, Completion-Menü
+    store.ts             externer Store (useSyncExternalStore)
+    connect.ts           /connect-Dialog
+    plain-ui.ts          Fallback ohne TTY
   config/
     config.ts            Dateien laden/mergen, Env > Projekt > User
     providers.ts         Profile auflösen, Presets, Validierung

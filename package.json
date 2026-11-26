@@ -5,20 +5,33 @@
   "type": "module",
   "description": "Eigener Coding-Agent-Harness: Agent-Loop, Tools, Kontext, Permissions, Sessions",
   "bin": {
-    "harness": "./src/cli.ts"
+    "harness": "./dist/cli.js"
   },
   "engines": {
-    "node": ">=24"
+    "node": ">=22"
   },
   "scripts": {
-    "start": "node src/cli.ts",
-    "dev": "node --watch src/cli.ts",
+    "start": "node --import tsx src/cli.tsx",
+    "dev": "node --watch --import tsx src/cli.tsx",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/",
-    "test:watch": "node --test --watch tests/"
+    "test": "node --import tsx --test \"tests/*.test.ts\" \"tests/*.test.tsx\"",
+    "test:watch": "node --import tsx --test --watch \"tests/*.test.ts\" \"tests/*.test.tsx\"",
+    "build": "tsc -p tsconfig.build.json",
+    "prepare": "npm run build"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/react": "^19.3.3",
+    "ink-testing-library": "^4.0.0",
+    "tsx": "^4.23.15",
     "typescript": "^5.9.0"
-  }
+  },
+  "dependencies": {
+    "ink": "^8.0.0",
+    "react": "^19.3.1"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
 }
