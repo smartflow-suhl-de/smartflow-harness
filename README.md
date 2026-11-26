@@ -3,35 +3,35 @@
 Ein eigener Coding-Agent-Harness. Klein, lesbar, ohne Framework.
 
 ```bash
-npm start -- init            # Projekt einrichten: harness.json + AGENTS.md
-npm start                    # startet immer — auch ohne Key
-# oder nach dem Build:
-npm run build && node dist/cli.js
+npm install
+npm link                     # einmalig: macht `harness` global verfügbar
+
+harness init                 # Projekt einrichten: harness.json + AGENTS.md
+harness                      # interaktiv, startet auch ohne Key
+harness "fix the failing test in tests/"
 ```
 
-Im Prompt: `/connect` richtet den Provider ein (Key, Test, speichern).
-
-Danach läuft es ohne Neustart:
+Ohne `npm link` gehen dieselben Befehle über `npm start --`:
 
 ```bash
+npm start -- init
+npm start
 npm start -- "fix the failing test in tests/"
 ```
 
-```bash
-npm start                        # interaktiv: Tab-Menü, History
-npm start -- --plan              # read-only (Plan-Modus)
-npm start -- --yolo              # keine Rückfragen (Hardline-Floor bleibt)
-npm start -- --provider local    # anderes Profil
-npm start -- --list-providers    # verfügbare Provider
-npm start -- --config            # aufgelöste Konfiguration
-npm test                         # 79 Tests
-npm run typecheck                # tsc --noEmit
-npm run build                    # dist/ für den harness-Bin
-```
+Im Prompt richtet `/connect` den Provider ein (Key, Test, speichern).
 
-Die UI ist [Ink](https://github.com/vadimdemedes/ink) (React fürs Terminal).
-`npm start` führt die `.tsx` über `tsx` direkt aus; `npm run build` erzeugt
-`dist/` für den installierbaren `harness`-Bin.
+```bash
+harness --plan              # read-only (Plan-Modus)
+harness --yolo              # keine Rückfragen (Hardline-Floor bleibt)
+harness --provider local    # anderes Profil
+harness --list-providers    # verfügbare Provider
+harness --config            # aufgelöste Konfiguration
+
+npm test                     # 113 Tests
+npm run typecheck            # tsc --noEmit
+npm run build                # dist/ für den harness-Bin
+```
 
 ## Was drin ist
 
