@@ -256,3 +256,85 @@ test("plain text answers are not mistaken for tool calls", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("denied tool calls are recorded in the audit log", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "harness-audit-deny-"));
+  try {
+    const session = await Session.create({ cwd: dir });
+    await session.append({ role: "user", content: "rm something" });
+    const provider = new FakeProvider([
+      {
+        text: "",
+        stopReason: "tool_calls",
+        toolCalls: [{ id: "x", name: "bash", args: { command: "rm -rf /" }, rawArgs: '{"command":"rm -rf /"}' }],
+      },
+    ]);
+
+    const { AuditLog } = await import("../src/safety/audit.ts");
+    const { readFile } = await import("node:fs/promises");
+    const auditPath = join(dir, "audit.jsonl");
+    const audit = new AuditLog({ path: auditPath });
+
+    await runAgent({
+      session,
+      provider,
+      tools: createToolRegistry(),
+      permissions: new PermissionEngine({ mode: "yolo", cwd: dir }),
+      systemPrompt: "test",
+      cwd: dir,
+      signal: new AbortController().signal,
+      compact: false,
+      maxSteps: 2,
+      audit,
+    });
+    await audit.flush();
+
+    const lines = (await readFile(auditPath, "utf8")).trim().split("\n").map((l) => JSON.parse(l!));
+    const denied = lines.find((l) => l.decision === "deny");
+    assert.ok(denied, "a denied call must appear in the audit log");
+    assert.equal(denied.tool, "bash");
+    assert.equal(denied.ok, false);
+    assert.ok(!JSON.stringify(lines).includes("rm -rf /"), "arguments are hashed, not stored");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("declined tool calls are recorded in the audit log", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "harness-audit-declined-"));
+  try {
+    const session = await Session.create({ cwd: dir });
+    await session.append({ role: "user", content: "write outside" });
+    const provider = new FakeProvider([
+      {
+        text: "",
+        stopReason: "tool_calls",
+        toolCalls: [{ id: "y", name: "write", args: { path: "/etc/x", content: "z" }, rawArgs: "{}" }],
+      },
+    ]);
+    const { AuditLog } = await import("../src/safety/audit.ts");
+    const { readFile } = await import("node:fs/promises");
+    const auditPath = join(dir, "audit.jsonl");
+    const audit = new AuditLog({ path: auditPath });
+
+    await runAgent({
+      session,
+      provider,
+      tools: createToolRegistry(),
+      permissions: new PermissionEngine({ mode: "default", cwd: dir }),
+      systemPrompt: "test",
+      cwd: dir,
+      signal: new AbortController().signal,
+      compact: false,
+      maxSteps: 2,
+      audit,
+      ask: async () => false,
+    });
+    await audit.flush();
+
+    const lines = (await readFile(auditPath, "utf8")).trim().split("\n").map((l) => JSON.parse(l!));
+    assert.ok(lines.some((l) => l.decision === "declined"), "a declined call must appear in the audit log");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

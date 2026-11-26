@@ -198,8 +198,26 @@ async function executeCall(
   let auditDecision: "allow" | "ask" | "deny" | "declined" =
     decision.action === "deny" ? "deny" : decision.action;
   if (decision.action === "ask") auditDecision = "ask";
+  // A refused call is exactly what an audit log is for: record it before
+  // returning, or the log only ever shows the calls that were allowed.
+  const logRefusal = (summary: string): void => {
+    void opts.audit?.record({
+      ts: new Date().toISOString(),
+      event: "tool_call",
+      tool: call.name,
+      argsHash,
+      argsKeys,
+      decision: auditDecision,
+      reason: decision.reason,
+      ok: false,
+      summary,
+      ms: Date.now() - startedAt,
+    });
+  };
+
   if (decision.action === "deny") {
     emit({ type: "tool_end", name: call.name, id: call.id, ok: false, summary: "denied" });
+    logRefusal("denied");
     return `Permission denied (${decision.reason}). Do not retry the same call; choose another approach or ask the user.`;
   }
   if (decision.action === "ask") {
@@ -209,6 +227,7 @@ async function executeCall(
     if (!allowed) auditDecision = "declined";
     if (!allowed) {
       emit({ type: "tool_end", name: call.name, id: call.id, ok: false, summary: "declined" });
+      logRefusal("declined");
       return "The user declined this tool call. Ask what they want instead.";
     }
   }

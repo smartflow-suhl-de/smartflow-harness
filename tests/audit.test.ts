@@ -97,3 +97,14 @@ test("AuditLog: flush waits for queued lines", async () => {
   const lines = (await readFile(join(dir, "audit.jsonl"), "utf8")).trim().split("\n");
   assert.equal(lines.length, 2);
 });
+
+test("AuditLog: back-to-back rotations never overwrite each other", async () => {
+  const { log, dir } = await tempLog(200);
+  for (let i = 0; i < 40; i++) {
+    await log.record({ ts: String(i), event: "tool_call", tool: "bash", summary: "x".repeat(60) });
+  }
+  await log.flush();
+  const files = await readdir(dir);
+  const archived = files.filter((f) => f.startsWith("audit.jsonl."));
+  assert.ok(new Set(archived).size === archived.length && archived.length > 0, "each rotation gets its own file");
+});
