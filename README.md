@@ -28,7 +28,7 @@ harness --provider local    # anderes Profil
 harness --list-providers    # verfügbare Provider
 harness --config            # aufgelöste Konfiguration
 
-npm test                     # 164 Tests (baut vorher)
+npm test                     # 170 Tests (baut vorher)
 npm run typecheck            # tsc --noEmit
 npm run build                # dist/ für den harness-Bin
 ```
@@ -305,10 +305,13 @@ In der Sandbox gilt eine feste `PATH`, ein leeres Environment (`--clearenv` — 
 API-Keys des Hosts bleiben draußen) und der Workspace als einziger Schreibort;
 `writablePaths` innerhalb von Systemverzeichnissen werden ignoriert.
 
-Kann bwrap auf dem Host nicht starten (Container ohne `CAP_SYS_ADMIN`, kein
-User-Namespace), unterscheidet der Modus: `auto` läuft ohne Sandbox weiter mit
-sichtbarem Hinweis in Ausgabe, Banner und Audit-Log; `bwrap` verweigert den
-Befehl, statt still ungeschützt zu laufen.
+Kann bwrap auf dem Host nicht starten (Container ohne Mount-Rechte), greift in
+`auto` ein zweiter Backend: ein User-Namespace über `unshare(1)` isoliert Netz,
+PIDs, IPC und das Environment — die Dateisicht bleibt geteilt, weil dafür
+Mount-Rechte nötig wären. Ist auch das nicht möglich, läuft der Befehl
+unsandboxed weiter, mit Grund in Ausgabe, Banner und Audit-Log. In `bwrap` wird
+der Befehl stattdessen verweigert. `unshareFallback: false` schaltet den
+zweiten Backend ab.
 
 Das Audit-Log schreibt eine NDJSON-Zeile pro Tool-Aufruf (Entscheidung, Dauer,
 Exit, Sandbox-Modus); Argumente stehen nur als SHA-256-Hash drin, Shell-Kommandos werden um Tokens

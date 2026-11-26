@@ -21,6 +21,15 @@ import { join, resolve } from "node:path";
 
 export type SandboxMode = "off" | "bwrap" | "auto";
 
+/**
+ * How a command is isolated:
+ *   bwrap    full bubblewrap namespace: filesystem, network, pids, environment
+ *   unshare  Linux user namespace via unshare(1): network, pids, ipc, session,
+ *            cleared environment. No filesystem isolation (needs mount rights).
+ *   none     plain shell
+ */
+export type SandboxKind = "bwrap" | "unshare" | "none";
+
 export interface SandboxConfig {
   /** "off" disables sandboxing, "bwrap" requires it, "auto" uses it if present. */
   mode?: SandboxMode;
@@ -30,10 +39,16 @@ export interface SandboxConfig {
   network?: boolean;
   /** Absolute path to the bwrap binary. Defaults to PATH lookup. */
   bwrapPath?: string;
+  /**
+   * If bwrap cannot start, fall back to a user-namespace sandbox (unshare(1)):
+   * network, pids and environment isolated, filesystem shared. Default true;
+   * only used in mode "auto". `false` degrades straight to an unsandboxed shell.
+   */
+  unshareFallback?: boolean;
 }
 
 export interface SandboxPlan {
-  kind: "bwrap" | "none";
+  kind: SandboxKind;
   /** Full argv for bwrap; empty when kind is "none". */
   argv: string[];
   /** Human-readable note, e.g. the reason for a fallback. */
@@ -58,7 +73,12 @@ export class Sandbox {
   readonly network: boolean;
   private readonly extraWritable: string[];
   readonly bwrap: string | undefined;
-  private probeResult: Promise<{ ok: boolean; reason?: string }> | undefined;
+  readonly unshare: string | undefined;
+  /** Allow the user-namespace fallback when bwrap cannot run (mode "auto" only). */
+  readonly allowUnshare: boolean;
+  /** Kind of isolation the most recent run actually got; for the audit log. */
+  lastKind: SandboxKind = "none";
+  private probeResult: Promise<{ ok: boolean; reason?: string; unshare: boolean }> | undefined;
 
   constructor(cfg: SandboxConfig = {}) {
     this.mode = cfg.mode ?? "auto";
@@ -71,75 +91,113 @@ export class Sandbox {
       .filter((p) => !overlapsSystemDir(p));
     // An explicit bwrapPath always wins, including "" which forces "missing" (tests).
     this.bwrap = cfg.bwrapPath !== undefined ? cfg.bwrapPath || undefined : findOnPath("bwrap");
+    this.unshare = findOnPath("unshare");
+    this.allowUnshare = cfg.unshareFallback ?? true;
   }
 
-  /** Whether sandboxing can be applied on this host under the current config. */
+  /** Whether any sandboxing can be applied on this host under the current config. */
   available(): boolean {
     if (this.mode === "off") return false;
-    return Boolean(this.bwrap) && process.platform === "linux";
+    if (process.platform !== "linux") return false;
+    return Boolean(this.bwrap) || (this.allowUnshare && Boolean(this.unshare));
   }
 
   /**
-   * Run a command and, if bwrap itself fails to start (a container without
-   * CAP_SYS_ADMIN prints "Failed to make / slave"), retry once in a plain
-   * shell. Isolation degrades, the tool keeps working, and `onFallback`
-   * carries the reason so the caller can surface and audit it.
+   * Decide how this command runs. bwrap first; if it cannot start (a container
+   * without mount rights prints "Failed to make / slave"), fall back to a
+   * constrained user namespace via unshare(1): network, pids, ipc and the
+   * environment stay isolated, only the filesystem view is shared. Mode "bwrap"
+   * refuses instead of degrading.
    */
-  async runWithFallback(
+  async resolve(
     opts: { cwd: string; command: string; env: Record<string, string> },
     onFallback?: (reason: string) => void,
-  ): Promise<{ kind: "bwrap" | "none"; note?: string; strict?: boolean }> {
+  ): Promise<{ kind: SandboxKind; argv: string[]; note?: string; strict?: boolean }> {
     const plan = this.plan(opts);
     if (plan.kind !== "bwrap") {
-      return { kind: "none", ...(plan.note ? { note: plan.note } : {}) };
+      this.lastKind = plan.kind;
+      return plan;
     }
 
-    // The probe costs a process per call; a host does not fix itself between
-    // two bash calls, so remember the verdict.
-    const cached = await this.probe();
-    if (cached.ok) return { kind: "bwrap" };
-    const reason = cached.reason ?? "bwrap cannot start here";
+    const probed = await this.probe();
+    if (probed.ok) {
+      this.lastKind = "bwrap";
+      return plan;
+    }
+
+    const reason = probed.reason ?? "bwrap cannot start here";
     if (this.mode === "bwrap") {
       // Strict mode is a promise, not a suggestion: refusing beats a silent
       // unsandboxed run.
-      return { kind: "none", note: `${reason}; mode "bwrap" forbids the fallback, refusing to run`, strict: true };
+      return { kind: "none", argv: [], note: `${reason}; mode "bwrap" forbids the fallback, refusing to run`, strict: true };
     }
-    onFallback?.(reason);
-    return { kind: "none", note: `${reason}; running unsandboxed` };
-  }
 
-  private async probeOnce(): Promise<{ ok: boolean; reason?: string }> {
-    const { spawn } = await import("node:child_process");
-    const probe = await new Promise<{ ok: boolean; stderr: string }>((resolve) => {
-      let stderr = "";
-      const child = spawn(this.bwrap!, ["--unshare-user", "--die-with-parent", "--ro-bind", "/", "/", "--", "/bin/true"], {
-        stdio: ["ignore", "ignore", "pipe"],
-      });
-      child.stderr?.on("data", (c: Buffer) => {
-        if (stderr.length < 400) stderr += c.toString();
-      });
-      child.on("error", (err) => resolve({ ok: false, stderr: err.message }));
-      child.on("close", (code) => resolve({ ok: code === 0, stderr }));
-    });
+    if (probed.unshare) {
+      onFallback?.(`${reason}; using a user-namespace sandbox (no filesystem isolation)`);
+      this.lastKind = "unshare";
+      return { kind: "unshare", argv: this.unshareArgv(opts), note: `${reason}; network/pid isolated via user namespace, filesystem shared` };
+    }
 
-    if (probe.ok) return { ok: true };
-    const first = probe.stderr.trim().split("\n")[0] || "unknown error";
-    return { ok: false, reason: `bwrap cannot start here (${first}); running unsandboxed` };
+    onFallback?.(`${reason}; running unsandboxed`);
+    this.lastKind = "none";
+    return { kind: "none", argv: [], note: `${reason}; running unsandboxed` };
   }
 
   /**
-   * Whether bwrap actually works here. `--version` alone is not enough: in a
-   * container without CAP_SYS_ADMIN (some sandboxed CI runners) bwrap starts
-   * and then fails on the first mount with "Failed to make / slave".
+   * unshare(1) budget: a user namespace (so the others need no root), then
+   * net/pid/ipc/uts/session inside it. `--mount-proc` is deliberately absent:
+   * it needs a mount namespace, which is exactly what is unavailable here.
    */
-  async probe(): Promise<{ ok: boolean; reason?: string }> {
-    if (!this.available()) {
-      return { ok: false, reason: this.mode === "off" ? "sandbox off" : "bwrap not found" };
-    }
+  private unshareArgv(opts: { cwd: string; command: string }): string[] {
+    const argv = [this.unshare!, "-U", "-r"];
+    if (!this.network) argv.push("-n");
+    argv.push("-p", "-f", "-i", "-u", "--");
+    argv.push("/usr/bin/env", "-i", "HOME=/tmp", "TMPDIR=/tmp", "PATH=" + SAFE_PATH, "GIT_PAGER=cat", "PAGER=cat", "NO_COLOR=1");
+    argv.push("/bin/sh", "-c", opts.command);
+    return argv;
+  }
+
+  /**
+   * Probe both backends once. `--version` is not enough for bwrap: it can be
+   * installed and still fail on the first mount.
+   */
+  async probe(): Promise<{ ok: boolean; reason?: string; unshare: boolean }> {
     if (!this.probeResult) {
       this.probeResult = this.probeOnce();
     }
     return this.probeResult;
+  }
+
+  private async probeOnce(): Promise<{ ok: boolean; reason?: string; unshare: boolean }> {
+    const { spawn } = await import("node:child_process");
+    const runOnce = (bin: string, args: string[]): Promise<{ ok: boolean; stderr: string }> =>
+      new Promise((resolve) => {
+        let stderr = "";
+        const child = spawn(bin, args, { stdio: ["ignore", "ignore", "pipe"] });
+        child.stderr?.on("data", (c: Buffer) => {
+          if (stderr.length < 400) stderr += c.toString();
+        });
+        child.on("error", (err) => resolve({ ok: false, stderr: err.message }));
+        child.on("close", (code) => resolve({ ok: code === 0, stderr }));
+      });
+
+    if (this.mode !== "off" && process.platform === "linux" && this.bwrap) {
+      const probe = await runOnce(this.bwrap, ["--unshare-user", "--die-with-parent", "--ro-bind", "/", "/", "--", "/bin/true"]);
+      if (probe.ok) return { ok: true, unshare: false };
+      const first = probe.stderr.trim().split("\n")[0] || "unknown error";
+      const reason = `bwrap cannot start here (${first})`;
+      if (!this.allowUnshare || !this.unshare) return { ok: false, reason, unshare: false };
+      const fallback = await runOnce(this.unshare, ["-U", "-r", "-n", "--", "/bin/true"]);
+      return { ok: false, reason, unshare: fallback.ok };
+    }
+
+    if (this.mode !== "off" && process.platform === "linux" && this.unshare && this.allowUnshare) {
+      const fallback = await runOnce(this.unshare, ["-U", "-r", "-n", "--", "/bin/true"]);
+      const reason = this.bwrap ? "bwrap not found" : "sandbox off";
+      return { ok: false, reason, unshare: fallback.ok };
+    }
+
+    return { ok: false, reason: this.mode === "off" ? "sandbox off" : "no sandbox binary found", unshare: false };
   }
 
   /**

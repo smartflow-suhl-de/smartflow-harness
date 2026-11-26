@@ -42,30 +42,21 @@ export function createBashTool(sandboxConfig: SandboxConfig = {}) {
 
     const env = { ...process.env, GIT_PAGER: "cat", PAGER: "cat", NO_COLOR: "1" };
 
-    const planned = sandbox.plan({ cwd, command, env: env as Record<string, string> });
-    // bwrap can be installed and still unable to start (no user namespaces, no
-    // CAP_SYS_ADMIN). Probe once so a broken sandbox degrades to the plain
-    // shell with an explicit note instead of failing every command. The probe
-    // is cached inside Sandbox, so this runs at most once per process.
-    const fallback = planned.kind === "bwrap"
-      ? await sandbox.runWithFallback({ cwd, command, env: env as Record<string, string> })
-      : { kind: "none" as const };
-    if (fallback.strict) {
+    // bwrap can be installed and still unable to start (no mount rights in a
+    // container). resolve() probes once, then picks bwrap, a user-namespace
+    // sandbox, or a plain shell and says which in `note`.
+    const plan = await sandbox.resolve({ cwd, command, env: env as Record<string, string> });
+    if (plan.strict) {
       return {
         ok: false,
-        output: `[sandbox] ${fallback.note}`,
+        output: `[sandbox] ${plan.note}`,
         summary: "sandbox refused",
       };
     }
-    const useBwrap = planned.kind === "bwrap" && fallback.kind === "bwrap";
-    const plan = {
-      kind: useBwrap ? ("bwrap" as const) : ("none" as const),
-      note: useBwrap ? planned.note : fallback.kind === "none" ? fallback.note ?? planned.note : planned.note,
-    };
 
     return new Promise((resolve) => {
-      const child = plan.kind === "bwrap"
-        ? spawn(planned.argv[0]!, planned.argv.slice(1), {
+      const child = plan.kind !== "none"
+        ? spawn(plan.argv[0]!, plan.argv.slice(1), {
             cwd,
             env,
             stdio: ["ignore", "pipe", "pipe"],
