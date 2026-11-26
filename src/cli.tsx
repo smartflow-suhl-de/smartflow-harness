@@ -177,9 +177,13 @@ async function main(): Promise<void> {
   const systemPrompt = buildSystemPrompt({ cwd, tools, contextFiles, extra: config.systemPrompt });
   const session = args.resume ? await Session.load(resolve(args.resume)) : await Session.create({ cwd });
 
+  const { discoverSkills, renderSkill } = await import("./skills/loader.ts");
+  const skills = await discoverSkills(cwd);
+
   const completer = createCompleter({
     providers: () => listProviders(config.file).map((p) => p.name),
     models: () => modelSuggestions,
+    skills: () => skills,
   });
   const toolSupport = new Map<string, ModelCapabilities>();
 
@@ -511,6 +515,21 @@ async function main(): Promise<void> {
         } finally {
           ui.setBusy(false);
         }
+      } else if (command === "skills") {
+        if (skills.length === 0) {
+          ui.addItem("notice", "no skills found (.skills/, skills/, ~/.config/harness/skills/)");
+        } else {
+          ui.addItem("info", "skills");
+          for (const s of skills) {
+            const left = `/${s.name}${s.args ? ` ${s.args}` : ""}`;
+            ui.addItem("notice", `  ${left.padEnd(28)} ${s.description} (${s.origin})`);
+          }
+        }
+      } else if (skills.some((s) => s.name === command)) {
+        const skill = skills.find((s) => s.name === command)!;
+        const prompt = renderSkill(skill, rest.join(" "));
+        ui.addItem("notice", `skill: ${skill.name}`);
+        await runTurn(prompt);
       } else {
         ui.addItem("error", `unknown command: /${command} (try /help)`);
       }
