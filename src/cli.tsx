@@ -61,6 +61,8 @@ interface Args {
   listProviders: boolean;
   showConfig: boolean;
   init: boolean;
+  acp: boolean;
+  json: boolean;
 }
 
 async function main(): Promise<void> {
@@ -191,6 +193,68 @@ async function main(): Promise<void> {
       cwd,
     }),
   );
+
+  if (args.acp) {
+    const { AcpServer } = await import("./acp/server.ts");
+    const server = new AcpServer({
+      input: stdin,
+      output: stdout,
+      provider: getProvider(),
+      baseTools: tools,
+      defaultCwd: cwd,
+      systemPrompt,
+      maxSteps: config.maxSteps,
+    });
+    server.start();
+    await new Promise<void>((resolve) => {
+      stdin.on("end", () => {
+        server.stop();
+        resolve();
+      });
+    });
+    return;
+  }
+
+  if (args.json) {
+    if (!args.prompt) {
+      process.stderr.write(JSON.stringify({ type: "error", message: "--json requires a prompt" }) + "\n");
+      process.exitCode = 1;
+      return;
+    }
+    if (!isConnected()) {
+      process.stdout.write(
+        JSON.stringify({
+          type: "error",
+          message: `provider "${active.name}" has no key. Run /connect or set ${active.keyHint}.`,
+        }) + "\n",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    await session.append({ role: "user", content: args.prompt });
+    const ac = new AbortController();
+    const onEvent = (event: AgentEvent) => {
+      process.stdout.write(JSON.stringify(event) + "\n");
+    };
+    try {
+      const result = await runAgent({
+        session,
+        provider: getProvider(),
+        tools,
+        permissions,
+        systemPrompt,
+        cwd,
+        signal: ac.signal,
+        onEvent,
+        maxSteps: config.maxSteps,
+      });
+      if (result.reason === "error") process.exitCode = 1;
+    } catch (err) {
+      process.stdout.write(JSON.stringify({ type: "error", message: (err as Error).message }) + "\n");
+      process.exitCode = 1;
+    }
+    return;
+  }
 
   const completer = createCompleter({
     providers: () => listProviders(config.file).map((p) => p.name),
@@ -692,6 +756,8 @@ Options
   --mode <plan|default|yolo>   permission mode (default: default)
   --resume <session.jsonl>     resume a transcript
   --cwd <dir>                  workspace (default: current directory)
+  --acp                        run as an Agent Client Protocol (ACP) server on stdio
+  --json                       headless JSON output (one event per line)
   --list-providers             list built-in and configured providers
   --config                     show the resolved configuration
   -h, --help                   show this help
@@ -734,11 +800,15 @@ function parseArgs(argv: string[]): Args {
     listProviders: false,
     showConfig: false,
     init: false,
+    acp: false,
+    json: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "init" && i === 0) args.init = true;
     else if (arg === "-h" || arg === "--help") args.help = true;
+    else if (arg === "--acp") args.acp = true;
+    else if (arg === "--json") args.json = true;
     else if (arg === "--provider" || arg === "-p") args.provider = argv[++i];
     else if (arg === "--list-providers") args.listProviders = true;
     else if (arg === "--config") args.showConfig = true;
