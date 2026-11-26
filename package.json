@@ -4,12 +4,17 @@
   "private": true,
   "type": "module",
   "description": "Eigener Coding-Agent-Harness: Agent-Loop, Tools, Kontext, Permissions, Sessions",
+  "license": "Apache-2.0",
   "bin": {
     "harness": "./dist/cli.js"
   },
   "engines": {
     "node": ">=22"
   },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "start": "node --import tsx src/cli.tsx",
     "dev": "node --watch --import tsx src/cli.tsx",
@@ -29,9 +34,5 @@
   "dependencies": {
     "ink": "^8.0.0",
     "react": "^19.3.1"
-  },
-  "files": [
-    "dist",
-    "README.md"
-  ]
+  }
 }

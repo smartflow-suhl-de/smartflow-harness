@@ -326,3 +326,11 @@ docs/RESEARCH.md         Recherche + Begründungen
 
 M3 LSP-Diagnostics · M4 MCP-Client · M5 Skills · M6 Sub-Agenten ·
 M7 ACP-Server · M8 OS-Sandbox. Details in `docs/RESEARCH.md` §6.
+
+## Lizenz
+
+Apache-2.0 — siehe [LICENSE](LICENSE). Copyright 2026 SmartFlow Suhl.
+
+Die Lizenz erlaubt kommerzielle Nutzung, Änderungen und Weitergabe, verlangt
+den Copyright-Hinweis und enthält einen ausdrücklichen Patent-Grant. Sie ist
+kompatibel mit dem Apache-2.0-Fork von OpenBot im selben Konto.
