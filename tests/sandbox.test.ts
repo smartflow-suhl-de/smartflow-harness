@@ -141,7 +141,16 @@ test("Sandbox: when bwrap cannot start, the user-namespace sandbox takes over", 
 
   const notes: string[] = [];
   const plan = await sandbox.resolve({ cwd: dir, command: "echo hi", env: {} }, (r) => notes.push(r));
-  assert.equal(plan.kind, "unshare", `expected the unshare backend, got ${plan.kind}: ${plan.note ?? ""}`);
+  // unshare(1) may exist yet have its namespaces blocked (restricted CI runners).
+  // The contract is: never bwrap here, either the namespace backend or an
+  // explicitly reported plain shell — never a silent fallback.
+  assert.notEqual(plan.kind, "bwrap");
+  assert.match(plan.note ?? "", /bwrap cannot start here/);
+  assert.equal(notes.length, 1);
+  if (plan.kind !== "unshare") {
+    t.skip(`user namespaces not permitted on this host: ${plan.note ?? ""}`);
+    return;
+  }
   assert.deepEqual(plan.argv.slice(0, 3), [sandbox.unshare, "-U", "-r"]);
   assert.ok(plan.argv.includes("-n"), "network is isolated by default");
   assert.ok(plan.argv.includes("-p"), "pid namespace");
@@ -180,7 +189,10 @@ test("Sandbox live: the user-namespace sandbox really isolates network and env",
 
   const { spawnSync } = await import("node:child_process");
   const script = "n=$(awk \"NR>2 && \\$1 !~ /lo:/\" /proc/net/dev | wc -l); echo net=$n; echo pid=$$; echo secret=${OPENAI_API_KEY:-none}";
-  const run = spawnSync(plan.argv[0]!, [...plan.argv.slice(1, -3), "/bin/sh", "-c", script], {
+  // Replace the trailing /bin/sh -c <command> with our own probe script.
+  const argv = [...plan.argv];
+  argv.splice(argv.length - 3, 3, "/bin/sh", "-c", script);
+  const run = spawnSync(argv[0]!, argv.slice(1), {
     encoding: "utf8",
     env: { ...process.env, OPENAI_API_KEY: "sk-REAL-SECRET" },
   });
