@@ -14,7 +14,7 @@ node src/cli.ts "fix the failing test in tests/"
 ```
 
 ```bash
-node src/cli.ts                  # interaktiv
+node src/cli.ts                  # interaktiv: tab, history, menü
 node src/cli.ts --plan           # read-only (Plan-Modus)
 node src/cli.ts --yolo           # keine Rückfragen (Hardline-Floor bleibt)
 node src/cli.ts --provider local # anderes Profil
@@ -38,6 +38,7 @@ Kein Build-Step: Node ≥24 führt `.ts` direkt aus (Type Stripping).
 | Sessions | `src/core/session.ts` | append-only JSONL, resume |
 | Provider-Profile | `src/config/providers.ts` | Presets + eigene Endpoints, Env/Datei/CLI |
 | `/connect` | `src/ui/connect.ts` | Provider einrichten ohne Neustart, Key-Test, Persistenz |
+| Eingabe | `src/ui/` | Raw-Mode-Editor: Completion-Menü, History, Wort-/Zeilen-Tasten |
 | CLI | `src/cli.ts` | REPL + one-shot |
 
 ## Warum so gebaut
@@ -151,6 +152,33 @@ Profile lassen sich auch direkt schreiben — nützlich für Repos und CI:
   }
 }
 ```
+
+## Bedienung
+
+Der Prompt ist ein echter Zeileneditor, kein `readline`-Fallback.
+
+| Taste | Wirkung |
+|---|---|
+| `tab` / `shift+tab` | vervollständigen, im Menü blättern |
+| `↑` / `↓` | History (oder im Menü navigieren) |
+| `←` `→`, `ctrl+b` `ctrl+f` | Cursor zeichenweise |
+| `alt+b` / `alt+f` | Cursor wortweise (auch `ctrl+←/→`) |
+| `ctrl+a` / `ctrl+e`, `home` / `end` | Zeilenanfang / -ende |
+| `ctrl+w` | Wort vor dem Cursor löschen |
+| `ctrl+u` / `ctrl+k` | bis Anfang / Ende löschen |
+| `ctrl+y` | zuletzt Gelöschtes einfügen |
+| `ctrl+l` | Bildschirm leeren |
+| `ctrl+j` | neue Zeile (mehrzeilig) |
+| `ctrl+c` | Zeile leeren; auf leerer Zeile: beenden |
+| `ctrl+d` | auf leerer Zeile: beenden |
+
+Vervollständigt werden Slash-Befehle, deren Argumente (`/mode`, `/connect`,
+`/model`) und Provider-Namen. Die History liegt in
+`~/.config/harness/history` (bzw. `$HARNESS_HOME/history`) und überlebt
+Neustarts. Eingaben für Keys werden als `•` gerendert und nie gespeichert.
+
+`ctrl+c` beendet sauber mit Exit-Code 0 — kein Stacktrace, auch mitten in
+`/connect`.
 
 ## Konfiguration
 

@@ -11,8 +11,9 @@ import type { AgentEvent } from "./core/types.ts";
 import { OpenAiCompatibleProvider } from "./provider/openai.ts";
 import { PermissionEngine } from "./safety/permissions.ts";
 import { createToolRegistry } from "./tools/index.ts";
-import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
+import { Terminal } from "./ui/terminal.ts";
+import { createCompleter, COMMANDS, KEY_HELP } from "./ui/commands.ts";
 import { resolve } from "node:path";
 
 const VERSION = "0.1.0";
@@ -68,6 +69,7 @@ async function main(): Promise<void> {
   if (args.mode) config.mode = args.mode;
   if (args.model) config.provider.model = args.model;
 
+  const modelSuggestions: string[] = [];
   let active = config.provider;
   // Built lazily: the REPL must start even with no provider connected.
   let provider: OpenAiCompatibleProvider | undefined;
@@ -86,16 +88,24 @@ async function main(): Promise<void> {
 
   const session = args.resume ? await Session.load(resolve(args.resume)) : await Session.create({ cwd });
 
-  const rl = createInterface({ input: stdin, output: stdout, terminal: true });
+  const terminal = new Terminal({
+    input: stdin,
+    output: stdout,
+    completer: createCompleter({
+      providers: () => listProviders(config.file).map((p) => p.name),
+      models: () => modelSuggestions,
+    }),
+  });
 
   const ask = async (req: { tool: string; args: Record<string, unknown>; reason: string }) => {
     const detail =
       req.tool === "bash"
         ? String(req.args.command ?? "")
         : JSON.stringify(req.args).slice(0, 200);
-    const answer = await rl.question(
+    const answer = await terminal.ask(
       `\n${c.yellow("allow?")} ${c.bold(req.tool)} ${c.dim(detail)} ${c.dim(`(${req.reason})`)} [y/N/a=always] `,
     );
+    if (answer === undefined) return false;
     const a = answer.trim().toLowerCase();
     if (a === "a" || a === "always") {
       permissions.mode = "yolo";
@@ -188,22 +198,19 @@ async function main(): Promise<void> {
           `  Run ${c.bold("harness")} and use ${c.bold("/connect")}, or set ${active.keyHint}.`,
       );
       process.exitCode = 1;
-      rl.close();
+      terminal.dispose();
       return;
     }
     await runTurn(args.prompt);
-    rl.close();
+    terminal.dispose();
     return;
   }
 
   printBanner(active, permissions.mode, session, isConnected());
   for (;;) {
-    let line: string;
-    try {
-      line = await rl.question(c.green("› "));
-    } catch {
-      break;
-    }
+    const line = await terminal.readLine(c.green("› "));
+    // undefined: Ctrl+C on an empty line, or Ctrl+D, or EOF. Leave quietly.
+    if (line === undefined) break;
     const input = line.trim();
     if (!input) continue;
     if (input === "/exit" || input === "/quit") break;
@@ -222,11 +229,14 @@ async function main(): Promise<void> {
           config,
           cwd,
           io: {
-            question: (q) => rl.question(q),
+            question: (q) => terminal.ask(q),
             write: (t) => stdout.write(t),
-            secret: (q) => askSecret(rl, q),
+            secret: (q) => terminal.secret(q),
           },
           args: rest,
+          onModels: (models) => {
+            modelSuggestions.splice(0, modelSuggestions.length, ...models);
+          },
         });
         if (ok) {
           config = await loadConfig(cwd, {
@@ -239,8 +249,34 @@ async function main(): Promise<void> {
         }
       } else if (command === "session") {
         stdout.write(c.dim(`${session.meta.id}  ${session.path}\n`));
+      } else if (command === "model") {
+        if (!rest[0]) {
+          stdout.write(c.dim(`${active.name} · ${active.model}\n`));
+          if (modelSuggestions.length > 0) {
+            stdout.write(c.dim(`known: ${modelSuggestions.slice(0, 12).join(", ")}\n`));
+          }
+          continue;
+        }
+        active = { ...active, model: rest[0] };
+        provider = buildProvider(active);
+        stdout.write(c.dim(`model: ${rest[0]}\n`));
+      } else if (command === "clear") {
+        stdout.write("\u001b[2J\u001b[3J\u001b[H");
+        printBanner(active, permissions.mode, session, isConnected());
       } else if (command === "compact") {
-        stdout.write(c.dim("compaction runs automatically before each turn\n"));
+        const { maybeCompact } = await import("./context/compact.ts");
+        const result = await maybeCompact({
+          messages: session.messages,
+          provider: getProvider(),
+          signal: new AbortController().signal,
+          threshold: 0, // force
+        });
+        if (result.compacted) {
+          session.replaceMessages(result.messages);
+          stdout.write(c.dim(`compacted ${result.removedMessages} messages → ${result.summaryTokens} tokens\n`));
+        } else {
+          stdout.write(c.dim("nothing to compact\n"));
+        }
       } else {
         stdout.write(c.yellow(`unknown command: /${command} (try /help)\n`));
       }
@@ -250,7 +286,7 @@ async function main(): Promise<void> {
     await runTurn(input);
   }
 
-  rl.close();
+  terminal.dispose();
   stdout.write(c.dim(`session: ${session.path}\n`));
 }
 
@@ -274,58 +310,19 @@ function printBanner(
   stdout.write("\n");
 }
 
-/** Read a key without echoing it. Falls back to plain input when not a TTY. */
-async function askSecret(rl: ReturnType<typeof createInterface>, prompt: string): Promise<string> {
-  if (!stdin.isTTY || !stdout.isTTY) return rl.question(prompt);
-
-  return new Promise<string>((resolvePromise) => {
-    stdout.write(prompt);
-    const wasRaw = stdin.isRaw;
-    stdin.setRawMode?.(true);
-    stdin.resume();
-
-    let value = "";
-    const onData = (chunk: Buffer) => {
-      for (const byte of chunk) {
-        const ch = String.fromCharCode(byte);
-        if (ch === "\r" || ch === "\n") {
-          cleanup();
-          stdout.write("\n");
-          resolvePromise(value);
-          return;
-        }
-        if (byte === 3) {
-          cleanup();
-          stdout.write("\n");
-          process.exit(130);
-        }
-        if (byte === 127 || byte === 8) {
-          value = value.slice(0, -1);
-          continue;
-        }
-        if (byte < 32) continue;
-        value += ch;
-      }
-    };
-    const cleanup = () => {
-      stdin.off("data", onData);
-      stdin.setRawMode?.(wasRaw ?? false);
-    };
-    stdin.on("data", onData);
-  });
-}
 
 function printCommands(): void {
-  stdout.write(
-    [
-      "/help              show this help",
-      "/connect [name|url]  set up a provider: key, endpoint, test, save",
-      "/mode plan|default|yolo   switch permission mode",
-      "/session           show session id and transcript path",
-      "/exit              quit",
-      "",
-    ].join("\n"),
-  );
+  const width = Math.max(...COMMANDS.map((c) => `/${c.name} ${c.args ?? ""}`.trim().length));
+  stdout.write(`${c.bold("commands")}\n`);
+  for (const command of COMMANDS) {
+    const left = `/${command.name}${command.args ? ` ${command.args}` : ""}`;
+    stdout.write(`  ${left.padEnd(width + 2)} ${c.dim(command.description)}\n`);
+  }
+  stdout.write(`\n${c.bold("keys")}\n`);
+  for (const [keys, description] of KEY_HELP) {
+    stdout.write(`  ${keys.padEnd(26)} ${c.dim(description)}\n`);
+  }
+  stdout.write("\n");
 }
 
 function buildProvider(resolved: ResolvedProvider): OpenAiCompatibleProvider {

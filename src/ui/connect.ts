@@ -4,9 +4,10 @@ import { BUILTIN_PROVIDERS, isLocalUrl, listProviders } from "../config/provider
 import { probeProvider } from "../provider/probe.ts";
 
 export interface ConnectIO {
-  question(prompt: string): Promise<string>;
+  /** Resolves to undefined when the user cancelled (Ctrl+C). */
+  question(prompt: string): Promise<string | undefined>;
   /** Masked input. Falls back to `question` when the terminal cannot hide. */
-  secret?(prompt: string): Promise<string>;
+  secret?(prompt: string): Promise<string | undefined>;
   write(text: string): void;
 }
 
@@ -27,6 +28,8 @@ export async function connect(opts: {
   io: ConnectIO;
   args: string[];
   env?: NodeJS.ProcessEnv;
+  /** Called with the model ids discovered from the endpoint. */
+  onModels?: (models: string[]) => void;
 }): Promise<ConnectResult> {
   const env = opts.env ?? process.env;
   const { io, config } = opts;
@@ -80,8 +83,15 @@ export async function connect(opts: {
   }
 
   io.write(`${probe.ok ? "ok" : "failed"} (${probe.message})\n`);
+  if (probe.models && probe.models.length > 0) opts.onModels?.(probe.models);
 
-  if (!probe.ok && !(await confirm(io, "save anyway?", false))) return false;
+  if (!probe.ok) {
+    const saveAnyway = await confirm(io, "save anyway?", false);
+    if (saveAnyway !== true) {
+      io.write("cancelled\n");
+      return false;
+    }
+  }
 
   const model =
     existing.model ??
@@ -121,7 +131,7 @@ function localKeyEnv(name: string, fallback: string): string {
 async function askBaseUrl(io: ConnectIO, name: string): Promise<string | undefined> {
   const answer = (
     await io.question(`base URL for "${name}" (OpenAI-compatible, e.g. https://api.example.com/v1): `)
-  ).trim();
+  )?.trim();
   if (!answer) return undefined;
   if (!/^https?:\/\//.test(answer)) {
     io.write("expected an http(s) URL\n");
@@ -132,7 +142,7 @@ async function askBaseUrl(io: ConnectIO, name: string): Promise<string | undefin
 
 async function chooseModel(io: ConnectIO, models: string[], name: string): Promise<string | undefined> {
   if (models.length === 0) {
-    const answer = (await io.question(`model id for ${name}: `)).trim();
+    const answer = (await io.question(`model id for ${name}: `))?.trim();
     return answer || undefined;
   }
 
@@ -145,7 +155,8 @@ async function chooseModel(io: ConnectIO, models: string[], name: string): Promi
   const shown = models.slice(0, 20);
   io.write(`models:\n`);
   shown.forEach((m, i) => io.write(`  ${String(i + 1).padStart(2)}) ${m}${m === preferred ? "  ←" : ""}\n`));
-  const answer = (await io.question(`pick a model [1-${shown.length}, default 1]: `)).trim();
+  const answer = (await io.question(`pick a model [1-${shown.length}, default 1]: `))?.trim();
+  if (answer === undefined) return undefined;
   if (!answer) return preferred;
 
   const index = Number(answer) - 1;
@@ -178,8 +189,9 @@ async function chooseProfile(config: Config, args: string[], io: ConnectIO): Pro
     const hint = entry?.baseUrl ?? preset?.baseUrl ?? "";
     io.write(` ${mark} ${name.padEnd(12)} ${origin === "config" ? "(configured)" : ""} ${hint}\n`);
   }
-  const answer = (await io.question(`connect to which provider? [${active}] `)).trim();
-  return { name: answer || active };
+  const answer = await io.question(`connect to which provider? [${active}] `);
+  if (answer === undefined) return undefined;
+  return { name: answer.trim() || active };
 }
 
 
@@ -193,23 +205,31 @@ async function resolveKey(opts: {
 
   const fromEnv = env[apiKeyEnv] ?? env.HARNESS_API_KEY;
   if (fromEnv) {
-    io.write(`using key from $${apiKeyEnv} \n`);
+    io.write(`using key from $${apiKeyEnv}\n`);
     return fromEnv;
   }
 
   const stored = (await loadCredentials(env)).providers[name]?.apiKey;
   if (stored) {
-    if (await confirm(io, "reuse the stored key?", true)) return stored;
+    const reuse = await confirm(io, "reuse the stored key?", true);
+    if (reuse === undefined) return "";
+    if (reuse) return stored;
   }
 
   const prompt = `API key for ${name}: `;
   const answer = io.secret ? await io.secret(prompt) : await io.question(prompt);
-  return answer.trim();
+  return (answer ?? "").trim();
 }
 
 
-async function confirm(io: ConnectIO, question: string, fallback: boolean): Promise<boolean> {
-  const answer = (await io.question(`${question} [${fallback ? "Y/n" : "y/N"}] `)).trim().toLowerCase();
+async function confirm(
+  io: ConnectIO,
+  question: string,
+  fallback: boolean,
+): Promise<boolean | undefined> {
+  const raw = await io.question(`${question} [${fallback ? "Y/n" : "y/N"}] `);
+  if (raw === undefined) return undefined;
+  const answer = raw.trim().toLowerCase();
   if (!answer) return fallback;
   return answer === "y" || answer === "yes";
 }

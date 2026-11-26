@@ -20,15 +20,11 @@ function fakeIO(answers: string[]): ConnectIO & { output: string[]; prompts: str
     prompts,
     async question(prompt: string) {
       prompts.push(prompt);
-      const next = queue.shift();
-      if (next === undefined) throw new Error(`unexpected prompt: ${prompt}`);
-      return next;
+      return queue.shift();
     },
     async secret(prompt: string) {
       prompts.push(prompt);
-      const next = queue.shift();
-      if (next === undefined) throw new Error(`unexpected secret prompt: ${prompt}`);
-      return next;
+      return queue.shift();
     },
     write(text: string) {
       output.push(text);
@@ -182,4 +178,37 @@ test("probe is reachable for a dead endpoint without throwing", async () => {
     400,
   );
   assert.equal(result.ok, false);
+});
+
+test("ctrl+c at the provider prompt cancels without throwing", async () => {
+  const box = await sandbox();
+  try {
+    const config = await loadConfig(box.dir, { env: box.env });
+    // First question (which provider) is cancelled.
+    const io = fakeIO([undefined as unknown as string]);
+
+    const ok = await connect({ config, cwd: box.dir, io, args: [], env: box.env });
+    assert.equal(ok, false);
+    const saved = await readFile(join(box.home, "harness.json"), "utf8").catch(() => undefined);
+    assert.equal(saved, undefined, "nothing written after a cancel");
+  } finally {
+    await box.cleanup();
+  }
+});
+
+test("ctrl+c at the key prompt cancels without throwing", async () => {
+  const api = await fakeApi({ models: ["m"], requireKey: "sk" });
+  const box = await sandbox();
+  try {
+    const config = await loadConfig(box.dir, { env: box.env });
+    const io = fakeIO([undefined as unknown as string]); // key prompt cancelled
+
+    const ok = await connect({ config, cwd: box.dir, io, args: [api.url, "gateway"], env: box.env });
+    assert.equal(ok, false);
+    const creds = await loadCredentials(box.env);
+    assert.equal(creds.providers.gateway, undefined);
+  } finally {
+    await api.close();
+    await box.cleanup();
+  }
 });

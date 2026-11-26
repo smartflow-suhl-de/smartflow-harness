@@ -26,6 +26,7 @@ Node (type stripping, no build step).
 - `src/context` — context files, compaction
 - `src/safety` — permission engine
 - `src/config` — config loading (env > harness.json > defaults)
+- `src/ui` — REPL: line editor, key decoding, completion, provider setup
 
 ## Style
 
@@ -34,3 +35,6 @@ Node (type stripping, no build step).
 - Small files. One responsibility per module.
 - Errors returned to the model must be actionable: say what failed and what to
   do instead.
+- User cancellation (Ctrl+C) is not an error: return `undefined`, never throw.
+- Terminal code renders through `src/ui/render.ts` helpers; keep the pure parts
+  (buffer, keys, layout) free of I/O so they stay testable.
