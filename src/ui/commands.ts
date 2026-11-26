@@ -74,7 +74,10 @@ const MODE_HINTS: Record<string, string> = {
  * Completer for a plain list of values (model ids, provider names).
  * Unlike `createCompleter` it does not require a leading slash.
  */
-export function createListCompleter(getItems: () => string[], hint?: string): Completer {
+export function createListCompleter(
+  getItems: () => string[],
+  hintFor?: (item: string) => string | undefined,
+): Completer {
   return {
     complete(buffer: string, cursor: number): Completion[] {
       const before = buffer.slice(0, cursor);
@@ -82,7 +85,10 @@ export function createListCompleter(getItems: () => string[], hint?: string): Co
       const typed = before.slice(start);
       return getItems()
         .filter((item) => item.startsWith(typed))
-        .map((item) => ({ value: item, label: item, ...(hint ? { hint } : {}) }));
+        .map((item) => {
+          const hint = hintFor?.(item);
+          return { value: item, label: item, ...(hint ? { hint } : {}) };
+        });
     },
   };
 }

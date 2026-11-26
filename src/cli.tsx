@@ -16,6 +16,15 @@ import type { AgentEvent } from "./core/types.ts";
 import { OpenAiCompatibleProvider } from "./provider/openai.ts";
 import { explainProviderError } from "./provider/errors.ts";
 import { fetchModels } from "./provider/probe.ts";
+import {
+  looksLikeToolCallText,
+  ollamaCapabilities,
+  ollamaCapabilitiesMany,
+  ollamaRoot,
+  RECOMMENDED_MODELS,
+  TOOLS_IN_NAME_ONLY,
+  type ModelCapabilities,
+} from "./provider/ollama.ts";
 import { PermissionEngine } from "./safety/permissions.ts";
 import { createToolRegistry } from "./tools/index.ts";
 import { stdin, stdout } from "node:process";
@@ -101,8 +110,22 @@ async function main(): Promise<void> {
       headers: active.headers,
     });
     if (result.ok && result.models.length > 0) {
-      modelSuggestions.splice(0, modelSuggestions.length, ...result.models);
-      return result.models;
+      // Tool-capable models first: the whole point of /model is to pick one
+      // that can act, not just one that answers.
+      if (ollamaRoot(active.baseUrl)) {
+        const capabilities = await ollamaCapabilitiesMany({
+          baseUrl: active.baseUrl,
+          models: result.models,
+        });
+        for (const [model, entry] of capabilities) toolSupport.set(model, entry);
+      }
+      const ordered = [...result.models].sort((a, b) => {
+        const left = canUseTools(a);
+        const right = canUseTools(b);
+        return Number(right === true) - Number(left === true);
+      });
+      modelSuggestions.splice(0, modelSuggestions.length, ...ordered);
+      return ordered;
     }
     return [];
   };
@@ -113,6 +136,7 @@ async function main(): Promise<void> {
     ui.updateStatus({ model: id });
     const path = await saveProviderModel(active.name, id, cwd);
     ui.addItem("notice", `model: ${id} · saved in ${path}`);
+    void warnIfNoTools(id);
   };
 
   const tools = createToolRegistry();
@@ -125,7 +149,38 @@ async function main(): Promise<void> {
     providers: () => listProviders(config.file).map((p) => p.name),
     models: () => modelSuggestions,
   });
-  const modelCompleter = createListCompleter(() => modelSuggestions, "model");
+  const toolSupport = new Map<string, ModelCapabilities>();
+
+  const canUseTools = (model: string): boolean | undefined => toolSupport.get(model)?.tools;
+
+  const recommended = (): string =>
+    RECOMMENDED_MODELS.slice(0, 3)
+      .map((entry) => `${entry.model} (${entry.size})`)
+      .join(", ");
+
+  /** Warn when the active model cannot call tools, pointing at cheap ones. */
+  const warnIfNoTools = async (model: string): Promise<void> => {
+    const capabilities = await ollamaCapabilities({ baseUrl: active.baseUrl, model });
+    if (!capabilities) return; // not Ollama, or an older server
+    toolSupport.set(model, capabilities);
+
+    if (capabilities.tools && !TOOLS_IN_NAME_ONLY.includes(model)) return;
+
+    const reason = capabilities.tools
+      ? `"${model}" advertises tools but returns the call as text`
+      : `"${model}" cannot call tools`;
+    ui.addItem("notice", `${reason}. Small tool-capable models: ${recommended()}`);
+  };
+
+  const modelCompleter = createListCompleter(
+    () => modelSuggestions,
+    (model) => {
+      if (TOOLS_IN_NAME_ONLY.includes(model)) return "tool calls as text";
+      const tools = canUseTools(model);
+      if (tools === undefined) return undefined;
+      return tools ? "tools" : "no tools";
+    },
+  );
 
   const interactive = Boolean(stdin.isTTY && stdout.isTTY);
   const ink = interactive ? createInkUi(statusOf(active, permissions.mode, isConnected())) : undefined;
@@ -164,6 +219,13 @@ async function main(): Promise<void> {
     switch (event.type) {
       case "text":
         if (event.text.trim()) ui.addItem("assistant", event.text.trim());
+        if (looksLikeToolCallText(event.text)) {
+          ui.addItem(
+            "notice",
+            `this model wrote the tool call as text instead of calling it. ` +
+              `Use /model to pick one that calls tools: ${recommended()}`,
+          );
+        }
         break;
       case "tool_start": {
         const detail =
@@ -270,6 +332,7 @@ async function main(): Promise<void> {
   }
 
   banner();
+  if (isConnected()) void warnIfNoTools(active.model);
 
   for (;;) {
     const result = await ui.ask("› ", {
@@ -341,6 +404,7 @@ async function main(): Promise<void> {
               connected: isConnected(),
             });
             ui.addItem("notice", `ready: ${active.name} · ${active.model}`);
+            void warnIfNoTools(active.model);
           }
         } finally {
           ui.setBusy(false);
@@ -377,6 +441,7 @@ async function main(): Promise<void> {
       } else if (command === "clear") {
         ui.clear();
         banner();
+  if (isConnected()) void warnIfNoTools(active.model);
       } else if (command === "compact") {
         const { maybeCompact } = await import("./context/compact.ts");
         ui.setBusy(true);

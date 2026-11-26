@@ -198,6 +198,26 @@ error: ollama: model "qwen3-coder" is not available — model 'qwen3-coder' not 
   available: llama3.2, qwen2.5-coder, mistral
 ```
 
+### Günstige Tool-Modelle (Ollama, geprüft)
+
+| Modell | Größe | Befund |
+|---|---|---|
+| `qwen3:0.6b` | 523 MB | **kleinstes, das Tools wirklich aufruft** (in diesem Harness verifiziert) |
+| `qwen3:1.7b` | 1.4 GB | gleiche Familie, mehr Reserve |
+| `qwen3:4b` | 2.5 GB | 256K Kontext, bester kleiner Tool-Caller |
+| `gemma3:4b` | 3.3 GB | ✗ keine Tool-Capability (nur `completion`, `vision`) |
+| `qwen2.5-coder:0.5b/1.5b` | 398 MB / 986 MB | ✗ meldet `tools`, schreibt den Aufruf aber als Text |
+
+```bash
+ollama pull qwen3:0.6b
+/model            # listet Modelle, tool-fähige zuerst
+```
+
+`/model` markiert jetzt jede Zeile: `tools`, `no tools` oder `tool calls as text`
+(aus Ollamas nativem `/api/show`). Beim Start, nach `/connect` und nach jeder
+Wahl warnt der Harness, wenn das Modell nicht handeln kann — statt es erst beim
+ersten 400er zu merken.
+
 ### Modelle ohne Tool-Support
 
 Kleine lokale Modelle (z. B. `gemma3:4b`) unterstützen teils keine Tool-Calls.

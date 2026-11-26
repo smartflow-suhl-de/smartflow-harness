@@ -180,6 +180,7 @@ oder echte OS-Sandbox nötig wird, ist der Loop klein genug zum Portieren.
 | Provider | **eine** OpenAI-kompatible Schicht | deckt OpenAI, OpenRouter, Groq, Mistral, Ollama, vLLM, LM Studio ab |
 | Provider-Auswahl | **Profile als Daten** (`providers` in `harness.json`) | neuer Endpoint = neuer JSON-Block; Secrets per `apiKeyEnv`, nie in der Datei |
 | UI | **Ink 8 + React 19** statt eigenem Renderer | Claude Code, Gemini CLI und Copilot CLI nutzen Ink; Flexbox-Layout, `useInput`, `usePaste` und testbare Komponenten ersetzen ~700 Zeilen Eigenbau. Kosten: JSX braucht einen Transform, deshalb `tsx` (dev/start) und `tsc` → `dist/` für den Bin |
+| Günstige Tool-Modelle | **Capabilities aus Ollamas `/api/show`** statt Raten | `qwen3:0.6b` (523 MB) ruft Tools auf, `gemma3:4b` kann es nicht, `qwen2.5-coder:1.5b` schreibt den Aufruf als Text — alles drei lokal verifiziert. Das `tools`-Flag allein reicht nicht; `/model` markiert beides |
 | Tool-lose Modelle | **einmaliger Retry ohne Tools + Hinweis** | Ollama-Modelle wie `gemma3:4b` lehnen `tools` mit 400 ab; statt jede Runde zu scheitern, läuft der Chat weiter — sichtbar degradiert statt still |
 | Fehler-Übersetzung | **Provider-Fehler → Handlung** (`provider/errors.ts`) | 404 „model not found“ ist der häufigste Setup-Fehler; die Meldung nennt Modell, Endpoint-Hinweis und die verfügbaren Modelle statt eines JSON-Bodys |
 | Setup-Fluss | **Start ohne Provider, `/connect` im REPL** | ein Harness, der ohne Key aussteigt, ist unbenutzbar; Setup gehört in die Laufzeit, nicht in einen Preflight |
