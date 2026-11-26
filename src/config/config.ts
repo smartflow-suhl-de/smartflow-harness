@@ -26,6 +26,8 @@ export interface ConfigFile {
   provider?: string;
   /** Named provider profiles. Any OpenAI-compatible endpoint works. */
   providers?: Record<string, ProviderEntry>;
+  /** External Model Context Protocol (MCP) servers. */
+  mcpServers?: Record<string, import("../mcp/types.ts").McpServerConfig>;
   /** Legacy flat fields, still honoured for the default OpenAI profile. */
   model?: string;
   baseUrl?: string;
@@ -42,6 +44,7 @@ export interface Config {
   rules: Rule[];
   maxSteps: number;
   systemPrompt: string;
+  mcpServers?: Record<string, import("../mcp/types.ts").McpServerConfig>;
   /** Which config files were read, for `harness config`. */
   sources: string[];
   /** The merged config file contents (user + project). */
@@ -68,16 +71,19 @@ export async function readConfigFiles(
   const sources: string[] = [];
   const merged: ConfigFile = {};
   const providers: Record<string, ProviderEntry> = {};
+  const mcpServers: Record<string, import("../mcp/types.ts").McpServerConfig> = {};
 
   for (const path of await configPaths(cwd, env)) {
     const parsed = await readJson(path);
     if (!parsed) continue;
     sources.push(path);
-    Object.assign(merged, stripKeys(parsed, ["providers"]));
+    Object.assign(merged, stripKeys(parsed, ["providers", "mcpServers"]));
     mergeProviders(providers, parsed.providers ?? {});
+    Object.assign(mcpServers, parsed.mcpServers ?? {});
   }
 
   if (Object.keys(providers).length > 0) merged.providers = providers;
+  if (Object.keys(mcpServers).length > 0) merged.mcpServers = mcpServers;
   return { file: merged, sources };
 }
 
@@ -105,6 +111,7 @@ export async function loadConfig(
     rules: file.rules ?? [],
     maxSteps: numberFromEnv(env.HARNESS_MAX_STEPS) ?? file.maxSteps ?? 60,
     systemPrompt: file.systemPrompt ?? "",
+    mcpServers: file.mcpServers ?? {},
     sources,
     file,
   };

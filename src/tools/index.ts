@@ -7,15 +7,20 @@ import { ToolRegistry } from "./registry.ts";
 import { writeTool } from "./write.ts";
 import { diffTool, getGitDiff, createUnifiedDiff } from "./diff.ts";
 import { diagnosticsTool } from "./diagnostics.ts";
+import { searchTools, createToolSearchTool, DEFERRED_THRESHOLD } from "./search.ts";
 
 /**
- * The default tool core plus search, diff, and diagnostics helpers.
+ * The default tool core plus search, diff, diagnostics and deferred loading helpers.
  */
-export function createToolRegistry(opts?: { includeSearch?: boolean; includeM3Tools?: boolean }): ToolRegistry {
+export function createToolRegistry(opts?: {
+  includeSearch?: boolean;
+  includeM3Tools?: boolean;
+  autoDeferThreshold?: number;
+}): ToolRegistry {
   const tools = [bashTool, readTool, editTool, writeTool];
   if (opts?.includeSearch !== false) tools.push(globTool, grepTool);
   if (opts?.includeM3Tools !== false) tools.push(diffTool, diagnosticsTool);
-  return new ToolRegistry(tools);
+  return new ToolRegistry(tools, { autoDeferThreshold: opts?.autoDeferThreshold });
 }
 
 export { ToolRegistry, defineTool } from "./registry.ts";
@@ -30,4 +35,7 @@ export {
   diagnosticsTool,
   getGitDiff,
   createUnifiedDiff,
+  searchTools,
+  createToolSearchTool,
+  DEFERRED_THRESHOLD,
 };
