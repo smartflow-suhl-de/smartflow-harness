@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { appendFile, chmod, mkdir, rename, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -124,8 +125,13 @@ export class AuditLog {
     try {
       const info = await stat(this.path);
       if (info.size <= this.maxBytes) return;
-      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      await rename(this.path, `${this.path}.${stamp}`);
+      // Two rotations within the same millisecond must not collide: a lost
+      // rename would silently drop a day of audit lines.
+      const stamp = `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`;
+      let target = `${this.path}.${stamp}`;
+      let n = 1;
+      while (existsSync(target)) target = `${this.path}.${stamp}-${n++}`;
+      await rename(this.path, target);
     } catch {
       // No file yet.
     }
