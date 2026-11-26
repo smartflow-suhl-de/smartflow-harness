@@ -305,10 +305,34 @@ In der Sandbox gilt eine feste `PATH`, ein leeres Environment (`--clearenv` — 
 API-Keys des Hosts bleiben draußen) und der Workspace als einziger Schreibort;
 `writablePaths` innerhalb von Systemverzeichnissen werden ignoriert.
 
-Kann bwrap auf dem Host nicht starten (Container ohne `CAP_SYS_ADMIN`, kein
-User-Namespace), unterscheidet der Modus: `auto` läuft ohne Sandbox weiter mit
-sichtbarem Hinweis in Ausgabe, Banner und Audit-Log; `bwrap` verweigert den
-Befehl, statt still ungeschützt zu laufen.
+Kann bwrap auf dem Host nicht starten, unterscheidet der Modus: `auto` läuft
+ohne Sandbox weiter mit sichtbarem Hinweis in Ausgabe, Banner und Audit-Log;
+`bwrap` verweigert den Befehl, statt still ungeschützt zu laufen.
+
+#### Warum bwrap auf Containern oft nicht startet
+
+bwrap setzt zuerst `mount(NULL, "/", NULL, MS_REC|MS_SLAVE, NULL)` und scheitert
+sonst mit `Failed to make / slave: Operation not permitted`. Ursache ist ein
+Seccomp-Filter oder fehlende Mount-Berechtigung der Umgebung, nicht ein fehlendes
+User-Namespace. `unshare -U -r` kann dann weiterhin funktionieren, während
+`unshare -m` scheitert — bwrap braucht aber genau die Mount-Seite.
+
+Stand dieses Hosts (Container, Kernel 6.8, uid 1000 ohne Capabilities):
+`unshare -U -r` geht, `unshare -n/-p/-i` innerhalb des User-Namespace auch,
+`unshare -m` und jeder bwrap-Aufruf nicht. Der Harness fällt hier deshalb immer
+auf die ungesandboxte Shell zurück; die Sandbox ist in diesem Betrieb nicht
+wirksam, und der Hinweis im Banner sagt das.
+
+Gegenprobe im Betrieb:
+
+```bash
+bwrap --unshare-user --ro-bind / / -- /bin/true   # hier: Failed to make / slave
+```
+
+Auf einem Host mit Mount-Rechten (`sudo bwrap ...`, systemd-nspawn, eigener
+Rechner) greift die Sandbox ohne weitere Konfiguration. Der bwrap-Pfad ist in
+diesem Repo über den argv-Builder getestet, nicht end-to-end auf einem Host, der
+ihn zulässt.
 
 Das Audit-Log schreibt eine NDJSON-Zeile pro Tool-Aufruf (Entscheidung, Dauer,
 Exit, Sandbox-Modus); Argumente stehen nur als SHA-256-Hash drin, Shell-Kommandos werden um Tokens
