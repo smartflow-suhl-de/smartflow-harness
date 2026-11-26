@@ -2,6 +2,7 @@ import type { Provider } from "../provider/provider.ts";
 import { looksLikeToolCallText } from "../provider/tool-call-text.ts";
 import { maybeCompact } from "../context/compact.ts";
 import type { PermissionEngine } from "../safety/permissions.ts";
+import { hashArgs, redactCommand, type AuditLog } from "../safety/audit.ts";
 import type { ToolRegistry } from "../tools/registry.ts";
 import { Session } from "./session.ts";
 import type { AgentEvent, EventSink, Message, ToolCall, ToolSpec, Usage } from "./types.ts";
@@ -24,6 +25,8 @@ export interface RunOptions {
   compact?: boolean;
   /** Whether to run post-edit diagnostics on code files (default false). */
   diagnostics?: boolean;
+  /** Security audit log. Disabled when omitted. */
+  audit?: AuditLog;
 }
 
 export interface RunResult {
@@ -181,6 +184,10 @@ async function executeCall(
     return msg;
   }
 
+  const startedAt = Date.now();
+  const argsHash = hashArgs(call.args);
+  const argsKeys = Object.keys(call.args).sort();
+
   const decision = opts.permissions.decide({
     tool: call.name,
     args: call.args,
@@ -188,6 +195,9 @@ async function executeCall(
   });
 
   let allowed = decision.action === "allow";
+  let auditDecision: "allow" | "ask" | "deny" | "declined" =
+    decision.action === "deny" ? "deny" : decision.action;
+  if (decision.action === "ask") auditDecision = "ask";
   if (decision.action === "deny") {
     emit({ type: "tool_end", name: call.name, id: call.id, ok: false, summary: "denied" });
     return `Permission denied (${decision.reason}). Do not retry the same call; choose another approach or ask the user.`;
@@ -196,6 +206,7 @@ async function executeCall(
     allowed = opts.ask
       ? await opts.ask({ tool: call.name, args: call.args, reason: decision.reason })
       : false;
+    if (!allowed) auditDecision = "declined";
     if (!allowed) {
       emit({ type: "tool_end", name: call.name, id: call.id, ok: false, summary: "declined" });
       return "The user declined this tool call. Ask what they want instead.";
@@ -206,10 +217,39 @@ async function executeCall(
   const onAbort = () => controller.abort();
   opts.signal.addEventListener("abort", onAbort, { once: true });
 
+  const logAudit = (ok: boolean, summary?: string, command?: string): void => {
+    void opts.audit?.record({
+      ts: new Date().toISOString(),
+      event: "tool_call",
+      tool: call.name,
+      argsHash,
+      argsKeys,
+      decision: auditDecision,
+      reason: decision.reason,
+      ok,
+      summary,
+      command,
+      ms: Date.now() - startedAt,
+    });
+  };
+
+  let sandboxNote: { kind: string; note?: string; command?: string } | undefined;
+
   try {
     const result = await tool.execute(call.args, {
       cwd: opts.cwd,
       signal: controller.signal,
+      sandboxReport: (report) => {
+        sandboxNote = report;
+        void opts.audit?.record({
+          ts: new Date().toISOString(),
+          event: "sandbox",
+          tool: call.name,
+          sandbox: report.kind,
+          reason: report.note,
+          command: previewCommand(report.command),
+        });
+      },
       authorize: async (req) => {
         if (req.readOnly) return true;
         const d = opts.permissions.decide(req);
@@ -239,14 +279,22 @@ async function executeCall(
     }
 
     emit({ type: "tool_end", name: call.name, id: call.id, ok: result.ok, summary: result.summary });
+    logAudit(result.ok, result.summary, sandboxNote?.command);
     return result.output;
   } catch (err) {
     const message = (err as Error).message;
     emit({ type: "tool_end", name: call.name, id: call.id, ok: false, summary: "error" });
+    logAudit(false, "error", sandboxNote?.command);
     return `Tool "${call.name}" failed: ${message}`;
   } finally {
     opts.signal.removeEventListener("abort", onAbort);
   }
+}
+
+/** Shell commands are recorded redacted and truncated: enough to recognize, not to leak. */
+function previewCommand(command: string | undefined): string | undefined {
+  if (!command) return undefined;
+  return redactCommand(command);
 }
 
 export type { AgentEvent };

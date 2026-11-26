@@ -28,7 +28,7 @@ harness --provider local    # anderes Profil
 harness --list-providers    # verfügbare Provider
 harness --config            # aufgelöste Konfiguration
 
-npm test                     # 113 Tests
+npm test                     # 164 Tests (baut vorher)
 npm run typecheck            # tsc --noEmit
 npm run build                # dist/ für den harness-Bin
 ```
@@ -42,6 +42,8 @@ npm run build                # dist/ für den harness-Bin
 | Tools | `src/tools/` | bash, read, write, edit, glob, grep |
 | Kontext | `src/context/` | `AGENTS.md`/`CLAUDE.md`/`CONTEXT.md` hierarchisch, Threshold-Compaction |
 | Safety | `src/safety/permissions.ts` | plan/default/yolo, Regeln als JSON, Hardline-Floor |
+| Sandbox | `src/safety/sandbox.ts` | bash in bubblewrap: Schreiben nur im Workspace, kein Netz, ehrlicher Fallback |
+| Audit-Log | `src/safety/audit.ts` | NDJSON, 0600, Argumente nur als Hash, Rotation bei 10 MiB |
 | Sessions | `src/core/session.ts` | append-only JSONL, resume |
 | Provider-Profile | `src/config/providers.ts` | Presets + eigene Endpoints, Env/Datei/CLI |
 | `/connect` | `src/ui/connect.ts` | Provider einrichten ohne Neustart, Key-Test, Persistenz |
@@ -283,6 +285,36 @@ Ausgabe zurück, damit `printf '/exit\n' | harness` weiter funktioniert.
 
 Weitere Env-Variablen: `HARNESS_MODE`, `HARNESS_MAX_STEPS`.
 
+### Sandbox und Audit-Log
+
+```json
+{
+  "sandbox": {
+    "mode": "auto",
+    "network": false,
+    "writablePaths": ["/tmp/build-cache"]
+  },
+  "audit": { "path": "~/.config/harness/audit.jsonl", "disabled": false }
+}
+```
+
+`mode` ist `auto` (Default: bwrap nutzen, wenn es läuft), `bwrap` (verlangt
+Sandbox) oder `off`. In der Sandbox sind Systempfade read-only, der Workspace
+und `writablePaths` beschreibbar, das Netz ist zu und `$HOME` zeigt auf `/tmp`.
+In der Sandbox gilt eine feste `PATH`, ein leeres Environment (`--clearenv` — die
+API-Keys des Hosts bleiben draußen) und der Workspace als einziger Schreibort;
+`writablePaths` innerhalb von Systemverzeichnissen werden ignoriert.
+
+Kann bwrap auf dem Host nicht starten (Container ohne `CAP_SYS_ADMIN`, kein
+User-Namespace), unterscheidet der Modus: `auto` läuft ohne Sandbox weiter mit
+sichtbarem Hinweis in Ausgabe, Banner und Audit-Log; `bwrap` verweigert den
+Befehl, statt still ungeschützt zu laufen.
+
+Das Audit-Log schreibt eine NDJSON-Zeile pro Tool-Aufruf (Entscheidung, Dauer,
+Exit, Sandbox-Modus); Argumente stehen nur als SHA-256-Hash drin, Shell-Kommandos werden um Tokens
+und Keys bereinigt. Env:
+`HARNESS_SANDBOX=off`, `HARNESS_AUDIT=off`.
+
 ## Projektkontext
 
 Lege eine `AGENTS.md` ins Repo — sie wird automatisch in den System-Prompt
@@ -325,7 +357,7 @@ docs/RESEARCH.md         Recherche + Begründungen
 ## Roadmap
 
 M3 LSP-Diagnostics · M4 MCP-Client · M5 Skills · M6 Sub-Agenten ·
-M7 ACP-Server · M8 OS-Sandbox. Details in `docs/RESEARCH.md` §6.
+M7 ACP-Server · M8 OS-Sandbox + Audit-Log. Details in `docs/RESEARCH.md` §6.
 
 ## Lizenz
 

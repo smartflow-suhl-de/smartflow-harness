@@ -173,7 +173,23 @@ async function main(): Promise<void> {
     void warnIfNoTools(id);
   };
 
-  const tools = createToolRegistry();
+  const tools = createToolRegistry({ sandbox: config.sandbox });
+
+  let sandboxNotice: string | undefined;
+  if (config.sandbox.mode !== "off") {
+    const { Sandbox } = await import("./safety/sandbox.ts");
+    const probe = await new Sandbox(config.sandbox).probe();
+    if (!probe.ok && probe.reason) sandboxNotice = `sandbox: ${probe.reason}`;
+  }
+
+  const { AuditLog } = await import("./safety/audit.ts");
+  const audit = new AuditLog({
+    ...(config.audit.path ? { path: config.audit.path } : {}),
+    ...(config.audit.disabled !== undefined ? { disabled: config.audit.disabled } : {}),
+    ...(config.audit.maxBytes !== undefined ? { maxBytes: config.audit.maxBytes } : {}),
+    onError: (err) => ui.addItem("notice", `audit log unavailable: ${err.message}`),
+  });
+
   const permissions = new PermissionEngine({ mode: config.mode, rules: config.rules, cwd });
   const contextFiles = await loadContextFiles(cwd);
   const systemPrompt = buildSystemPrompt({ cwd, tools, contextFiles, extra: config.systemPrompt });
@@ -204,6 +220,7 @@ async function main(): Promise<void> {
       defaultCwd: cwd,
       systemPrompt,
       maxSteps: config.maxSteps,
+      audit,
     });
     server.start();
     await new Promise<void>((resolve) => {
@@ -247,6 +264,7 @@ async function main(): Promise<void> {
         signal: ac.signal,
         onEvent,
         maxSteps: config.maxSteps,
+        audit,
       });
       if (result.reason === "error") process.exitCode = 1;
     } catch (err) {
@@ -400,6 +418,7 @@ async function main(): Promise<void> {
         onEvent,
         ask: permissionPrompt,
         maxSteps: config.maxSteps,
+        audit,
       });
       if (result.reason === "aborted") ui.addItem("notice", "interrupted");
       // A failed turn must not change the process exit code: Ctrl+C later
@@ -415,7 +434,7 @@ async function main(): Promise<void> {
   const banner = (): void => {
     ui.addItem(
       "notice",
-      `harness ${VERSION} · ${active.name} · ${active.model} · ${permissions.mode} · ${
+      `${sandboxNotice ? sandboxNotice + "\n" : ""}harness ${VERSION} · ${active.name} · ${active.model} · ${permissions.mode} · ${
         isConnected() ? "connected" : "not connected"
       }`,
     );
